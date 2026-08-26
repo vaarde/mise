@@ -1,0 +1,29 @@
+# Build artifacts
+bin/
+mise
+
+# Mise state and credentials (never commit these)
+.mise/state.json
+.mise/credentials
+.mise/lock
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
