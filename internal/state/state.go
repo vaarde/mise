@@ -31,12 +31,12 @@ const (
 
 // State represents the complete state file (.mise/state.json).
 type State struct {
-	Version   int                        `json:"version"`
-	Provider  string                     `json:"provider"`
-	LastFetch *time.Time                 `json:"last_fetch,omitempty"`
-	LastApply *time.Time                 `json:"last_apply,omitempty"`
-	Resources map[string]*ResourceState  `json:"resources"`  // key: "type.name"
-	Locations map[string]*LocationState  `json:"locations"`  // key: provider location ID
+	Version   int                       `json:"version"`
+	Provider  string                    `json:"provider"`
+	LastFetch *time.Time                `json:"last_fetch,omitempty"`
+	LastApply *time.Time                `json:"last_apply,omitempty"`
+	Resources map[string]*ResourceState `json:"resources"` // key: "type.name"
+	Locations map[string]*LocationState `json:"locations"` // key: provider location ID
 }
 
 // ResourceState tracks a single resource's relationship to the POS.

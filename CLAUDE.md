@@ -27,6 +27,7 @@ CLI (cobra commands) → Core Engine → Provider Interface → POS Adapter (Squ
 - **Square adapter** (`internal/providers/square/`) — first POS adapter, uses Square Catalog + Locations APIs
 - **Config loader** (`internal/config/`) — parses mise.yaml and resource YAML files
 - **State manager** (`internal/state/`) — reads/writes .mise/state.json
+- **Credentials store** (`internal/credentials/`) — reads/writes .mise/credentials (0600), provider-agnostic
 
 The engine never calls POS APIs directly. It only talks to the Provider interface. New POS platforms are added by implementing that interface — no engine changes needed.
 
@@ -55,16 +56,18 @@ make fmt          # Format all Go files
 - The provider interface uses `context.Context` on all methods for cancellation and timeouts.
 - Error handling follows Go conventions: return errors, don't panic. API errors are classified as retryable (429, 5xx) or non-retryable (4xx).
 - Square sandbox (`https://connect.squareupsandbox.com/v2`) is used for all development and testing.
+- Secrets live only in `.mise/credentials` (0600, gitignored). `mise.yaml` records the auth *method*, never a token. `SQUARE_ACCESS_TOKEN` / `MISE_SQUARE_ACCESS_TOKEN` override the stored file so CI never runs `mise init`.
+- Interactive prompts must degrade to a clear error when stdin is not a terminal — never block, never silently take a default.
 - Mise never deletes POS resources unless the operator explicitly passes `--destroy`. Safety-first default.
 - State files and credentials (`.mise/`) are gitignored and must never be committed.
 
 ## Current Status
 
-Phase 0 — Foundation. The project has the full scaffold: CLI commands (stubbed), provider interface, Square adapter (stubbed), config loader, state manager, and engine types. Each stubbed function has a TODO comment mapping to the PRD milestone where it gets implemented.
+Phase 0 — Foundation, Milestone 1 complete. `mise init` is implemented end to end against Square: OAuth2 authorization-code flow (local callback listener, anti-CSRF state, token exchange and refresh) and personal access tokens, credential verification via `GET /v2/locations`, and workspace scaffolding (mise.yaml, .mise/, .gitignore). `fetch`, `plan`, `apply`, and `drift` are still stubs, each with a TODO comment mapping to the PRD milestone where it gets implemented.
 
 ## Milestone Sequence
 
-1. **Skeleton** (done) — Project structure, cobra CLI, provider interface
+1. **Skeleton** (done) — Project structure, cobra CLI, provider interface, `mise init` with Square OAuth2 and access token auth
 2. **Fetch** — `mise fetch` pulls live config from Square into YAML files
 3. **Plan** — `mise plan` computes diffs between declared YAML and live state
 4. **Apply** — `mise apply` pushes changes to Square via batch API
@@ -78,5 +81,7 @@ Phase 0 — Foundation. The project has the full scaffold: CLI commands (stubbed
 - Rate limit: ~40 req/s. The client has a built-in token-bucket limiter set to 30/s.
 - Catalog objects use `present_at_location_ids` for location scoping
 - Batch upsert (`POST /v2/catalog/batch-upsert`) handles up to 10,000 objects — prefer this over individual calls during apply
+- OAuth endpoints live at the host root (`/oauth2/authorize`, `/oauth2/token`), not under `/v2`. The token endpoint takes a JSON body and returns an RFC3339 `expires_at`, not `expires_in` seconds — which is why Mise does its own token exchange instead of using `oauth2.Config.Exchange`.
+- OAuth errors come back in two shapes: `{"error","error_description"}` for grant failures and `{"type","message"}` for rejected applications.
 - Every catalog mutation requires an `idempotency_key`
 - Catalog objects have a `version` field for optimistic concurrency — store it in state, pass it on updates

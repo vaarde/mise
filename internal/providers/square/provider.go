@@ -18,8 +18,8 @@ const (
 	ProviderName = "square"
 
 	// API base URLs
-	ProductionBaseURL = "https://connect.squareup.com/v2"
-	SandboxBaseURL    = "https://connect.squareupsandbox.com/v2"
+	ProductionBaseURL = ProductionHost + "/v2"
+	SandboxBaseURL    = SandboxHost + "/v2"
 )
 
 // Supported resource types for the Square adapter.
@@ -51,14 +51,14 @@ func (p *SquareProvider) Name() string {
 }
 
 func (p *SquareProvider) Configure(cfg provider.ProviderConfig) error {
-	// Set base URL based on environment
-	switch cfg.Environment {
-	case "sandbox":
-		p.baseURL = SandboxBaseURL
-	case "production", "":
-		p.baseURL = ProductionBaseURL
-	default:
-		return fmt.Errorf("unknown environment %q — use 'production' or 'sandbox'", cfg.Environment)
+	baseURL, err := BaseURLFor(cfg.Environment)
+	if err != nil {
+		return err
+	}
+	p.baseURL = baseURL
+
+	if cfg.Credentials.AccessToken == "" {
+		return fmt.Errorf("no Square access token available — run 'mise init' or set SQUARE_ACCESS_TOKEN")
 	}
 
 	// Initialize HTTP client with credentials
@@ -68,8 +68,10 @@ func (p *SquareProvider) Configure(cfg provider.ProviderConfig) error {
 }
 
 func (p *SquareProvider) ListLocations(ctx context.Context) ([]provider.Location, error) {
-	// TODO: Milestone 2 — call GET /v2/locations
-	return nil, fmt.Errorf("not yet implemented")
+	if p.client == nil {
+		return nil, fmt.Errorf("square provider is not configured")
+	}
+	return p.client.ListLocations(ctx)
 }
 
 func (p *SquareProvider) ResourceTypes() []string {

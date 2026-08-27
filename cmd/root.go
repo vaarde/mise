@@ -17,6 +17,14 @@ It lets multi-location restaurant operators define, version-control,
 and deploy POS configuration (menus, tax rates, service charges,
 discounts) as declarative YAML — with plan/apply workflows, drift
 detection, and rollback via git.`,
+
+	// A failed API call or a bad token is not a usage mistake — dumping
+	// the flag list on top of the error buries it. Cobra still prints
+	// usage for genuine flag and argument errors.
+	SilenceUsage: true,
+
+	// Execute prints the error itself, once.
+	SilenceErrors: true,
 }
 
 // Global flags
@@ -33,7 +41,7 @@ func init() {
 // Execute runs the root command. Called from main.go.
 func Execute() error {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return err
 	}
 	return nil

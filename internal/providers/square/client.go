@@ -11,6 +11,21 @@ import (
 	"time"
 )
 
+const (
+	// APIVersion pins the Square API version so that Square's own
+	// rollouts cannot change response shapes under Mise.
+	APIVersion = "2024-01-18"
+
+	// UserAgent identifies Mise in Square's API logs.
+	UserAgent = "Mise/0.1.0"
+
+	// maxAttempts bounds retries of retryable failures (429, 5xx).
+	maxAttempts = 3
+
+	// retryBaseDelay is the first backoff interval; it doubles per attempt.
+	retryBaseDelay = 500 * time.Millisecond
+)
+
 // Client is an HTTP client for the Square API. It handles
 // authentication headers, rate limiting, and JSON serialization.
 type Client struct {
@@ -52,9 +67,38 @@ func (c *Client) Delete(ctx context.Context, path string, result interface{}) er
 	return c.do(ctx, http.MethodDelete, path, nil, result)
 }
 
-// do is the internal method that executes all HTTP requests.
-// It handles auth headers, rate limiting, and error classification.
+// do executes a request, retrying retryable failures (429 rate limit,
+// 5xx server errors) with exponential backoff. Non-retryable errors
+// (400, 401, 404) are returned immediately — retrying a bad request
+// only wastes the operator's time.
 func (c *Client) do(ctx context.Context, method string, path string, body interface{}, result interface{}) error {
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = c.attempt(ctx, method, path, body, result)
+		if lastErr == nil {
+			return nil
+		}
+
+		apiErr, ok := lastErr.(*APIError)
+		if !ok || !apiErr.Retryable || attempt == maxAttempts {
+			return lastErr
+		}
+
+		delay := retryBaseDelay * time.Duration(1<<(attempt-1))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+
+	return lastErr
+}
+
+// attempt performs a single HTTP request. It handles auth headers,
+// rate limiting, and error classification.
+func (c *Client) attempt(ctx context.Context, method string, path string, body interface{}, result interface{}) error {
 	// Wait for rate limiter
 	c.rateLimiter.Wait()
 
@@ -77,8 +121,8 @@ func (c *Client) do(ctx context.Context, method string, path string, body interf
 	// Square requires Bearer token auth and JSON content type
 	req.Header.Set("Authorization", "Bearer "+c.accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Square-Version", "2024-01-18") // Pin API version for stability
-	req.Header.Set("User-Agent", "Mise/0.1.0")
+	req.Header.Set("Square-Version", APIVersion)
+	req.Header.Set("User-Agent", UserAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -130,9 +174,9 @@ func classifyError(statusCode int, body []byte) *APIError {
 	// Try to parse structured error
 	var parsed struct {
 		Errors []struct {
-			Code    string `json:"code"`
-			Detail  string `json:"detail"`
-			Field   string `json:"field"`
+			Code   string `json:"code"`
+			Detail string `json:"detail"`
+			Field  string `json:"field"`
 		} `json:"errors"`
 	}
 	if json.Unmarshal(body, &parsed) == nil && len(parsed.Errors) > 0 {

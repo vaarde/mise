@@ -7,9 +7,9 @@ import "github.com/vaarde/mise/internal/provider"
 
 // RootConfig represents the top-level mise.yaml file.
 type RootConfig struct {
-	Version        string                     `yaml:"version"`
-	Provider       provider.ProviderConfig    `yaml:"provider"`
-	LocationGroups map[string]LocationGroup   `yaml:"location_groups"`
+	Version        string                   `yaml:"version"`
+	Provider       provider.ProviderConfig  `yaml:"provider"`
+	LocationGroups map[string]LocationGroup `yaml:"location_groups"`
 }
 
 // LocationGroup defines a named set of locations that resources

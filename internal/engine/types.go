@@ -46,19 +46,19 @@ func (a Action) Symbol() string {
 
 // Plan represents the complete set of changes Mise will make.
 type Plan struct {
-	Changes  []ResourceChange `json:"changes"`
-	Summary  PlanSummary      `json:"summary"`
+	Changes []ResourceChange `json:"changes"`
+	Summary PlanSummary      `json:"summary"`
 }
 
 // ResourceChange describes a single resource that will be created,
 // updated, or deleted, along with per-property diffs.
 type ResourceChange struct {
-	Action       Action            `json:"action"`
-	ResourceType string            `json:"resource_type"` // e.g. "square_catalog_tax"
-	ResourceName string            `json:"resource_name"` // e.g. "ga_state_sales_tax"
-	ProviderID   string            `json:"provider_id"`   // existing ID (empty for creates)
-	LocationIDs  []string          `json:"location_ids"`  // affected locations
-	Diffs        []PropertyDiff    `json:"diffs"`         // property-level changes
+	Action       Action         `json:"action"`
+	ResourceType string         `json:"resource_type"` // e.g. "square_catalog_tax"
+	ResourceName string         `json:"resource_name"` // e.g. "ga_state_sales_tax"
+	ProviderID   string         `json:"provider_id"`   // existing ID (empty for creates)
+	LocationIDs  []string       `json:"location_ids"`  // affected locations
+	Diffs        []PropertyDiff `json:"diffs"`         // property-level changes
 }
 
 // FullName returns "type.name" for display.
