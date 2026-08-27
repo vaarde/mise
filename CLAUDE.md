@@ -52,7 +52,9 @@ make fmt          # Format all Go files
 ## Development Conventions
 
 - Config files use YAML. State files use JSON.
-- Resources reference each other with `ref(type.name)` syntax — the engine resolves these at plan/apply time.
+- Resources reference each other with `ref(type.name)` syntax. Adapters emit `provider.Ref{ResourceType, ProviderID}` values inside a resource's properties rather than raw IDs or ref strings; the engine rewrites them into `ref(type.name)` once every resource has a config name. This keeps platform-specific knowledge (which fields are references) in the adapter and naming policy in the engine.
+- Config names are derived by the engine: the platform's display name, slugified ("GA State Sales Tax" → `ga_state_sales_tax`). Collisions get a numeric suffix assigned in provider-ID order, so names stay stable across runs.
+- `mise fetch` must be idempotent — fetching twice with nothing changed produces byte-identical files. That means deterministic ordering everywhere: sorted resources, sorted keys, sorted reference lists.
 - The provider interface uses `context.Context` on all methods for cancellation and timeouts.
 - Error handling follows Go conventions: return errors, don't panic. API errors are classified as retryable (429, 5xx) or non-retryable (4xx).
 - Square sandbox (`https://connect.squareupsandbox.com/v2`) is used for all development and testing.
@@ -63,12 +65,21 @@ make fmt          # Format all Go files
 
 ## Current Status
 
-Phase 0 — Foundation, Milestone 1 complete. `mise init` is implemented end to end against Square: OAuth2 authorization-code flow (local callback listener, anti-CSRF state, token exchange and refresh) and personal access tokens, credential verification via `GET /v2/locations`, and workspace scaffolding (mise.yaml, .mise/, .gitignore). `fetch`, `plan`, `apply`, and `drift` are still stubs, each with a TODO comment mapping to the PRD milestone where it gets implemented.
+Phase 0 — Foundation, Milestones 1 and 2 complete.
+
+- `mise init` — OAuth2 authorization-code flow (local callback listener, anti-CSRF state, token exchange and refresh) and personal access tokens, credential verification via `GET /v2/locations`, workspace scaffolding.
+- `mise fetch` — reads the live catalog (items, categories, taxes, discounts, modifier lists) plus locations, deduplicates resources across locations, resolves cross-resource references, generates YAML config files, and writes `.mise/state.json`.
+
+`plan`, `apply`, and `drift` are still stubs, each with a TODO comment mapping to the PRD milestone where it gets implemented.
+
+## Known Design Decisions To Revisit
+
+- **State stores resolved refs.** `.mise/state.json` records properties in the same shape as the config files, i.e. `"category": "ref(square_catalog_category.beverages)"`, not the raw provider ID. Drift (Milestone 5) compares stored state against live API reads, where references arrive as `provider.Ref` values — so drift must normalize before comparing, and should match live objects to state entries **by provider ID**, never by config name. Matching by name would be fragile: adding a resource whose slug collides with an existing one can shift the numeric suffixes.
 
 ## Milestone Sequence
 
 1. **Skeleton** (done) — Project structure, cobra CLI, provider interface, `mise init` with Square OAuth2 and access token auth
-2. **Fetch** — `mise fetch` pulls live config from Square into YAML files
+2. **Fetch** (done) — `mise fetch` pulls live config from Square into YAML files and writes the initial state file
 3. **Plan** — `mise plan` computes diffs between declared YAML and live state
 4. **Apply** — `mise apply` pushes changes to Square via batch API
 5. **Drift** — `mise drift` detects changes made outside Mise
@@ -84,4 +95,7 @@ Phase 0 — Foundation, Milestone 1 complete. `mise init` is implemented end to 
 - OAuth endpoints live at the host root (`/oauth2/authorize`, `/oauth2/token`), not under `/v2`. The token endpoint takes a JSON body and returns an RFC3339 `expires_at`, not `expires_in` seconds — which is why Mise does its own token exchange instead of using `oauth2.Config.Exchange`.
 - OAuth errors come back in two shapes: `{"error","error_description"}` for grant failures and `{"type","message"}` for rejected applications.
 - Every catalog mutation requires an `idempotency_key`
-- Catalog objects have a `version` field for optimistic concurrency — store it in state, pass it on updates
+- Catalog objects have a `version` field for optimistic concurrency — store it in state, pass it on updates. It arrives as a JSON number; Mise stores it as a string, since other platforms use opaque string etags.
+- **Square's catalog is account-wide, not location-scoped.** One tax object carries the list of locations it applies at (`present_at_all_locations` minus `absent_at_location_ids`, or an explicit `present_at_location_ids`). The adapter lists each catalog type once per provider instance and filters per location in memory — otherwise a 15-location fetch would download the whole catalog 15 times. Commands build a fresh provider, so the cache never outlives one run.
+- `GET /v2/catalog/list` is cursor-paginated. Mise detects a repeating cursor on its second sighting rather than exhausting a page budget.
+- Deleted catalog objects are tombstoned (`is_deleted: true`), not removed — filter them out.

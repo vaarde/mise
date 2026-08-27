@@ -37,9 +37,15 @@ type ResourceFile struct {
 // ResourceDef is a single resource definition from a config file.
 // It declares what a resource should look like on the POS.
 type ResourceDef struct {
-	Type       string                 `yaml:"type"`       // e.g. "square_catalog_tax"
-	Name       string                 `yaml:"name"`       // unique name within this type
-	Locations  string                 `yaml:"locations"`  // location group reference, e.g. "${group.georgia}"
+	Type string `yaml:"type"` // e.g. "square_catalog_tax"
+	Name string `yaml:"name"` // unique name within this type
+
+	// Locations scopes the resource. It is either a group reference
+	// ("${group.georgia}") or an explicit list of provider location IDs.
+	// mise fetch writes the group form when a resource is present at
+	// every location and the explicit form otherwise.
+	Locations interface{} `yaml:"locations,omitempty"`
+
 	Properties map[string]interface{} `yaml:"properties"` // resource-specific properties
 }
 

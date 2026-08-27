@@ -30,6 +30,11 @@ var fakeState struct {
 	locations             []provider.Location
 	listErr               error
 	configureErr          error
+
+	// resourceTypes and resources drive ReadAll, keyed "type@location".
+	resourceTypes []string
+	resources     map[string][]*provider.Resource
+	readErr       error
 }
 
 type fakeProvider struct{}
@@ -49,14 +54,22 @@ func (f *fakeProvider) ListLocations(context.Context) ([]provider.Location, erro
 	return fakeState.locations, fakeState.listErr
 }
 
-func (f *fakeProvider) ResourceTypes() []string { return []string{"fakepos_tax"} }
+func (f *fakeProvider) ResourceTypes() []string {
+	if len(fakeState.resourceTypes) > 0 {
+		return fakeState.resourceTypes
+	}
+	return []string{"fakepos_tax"}
+}
 
 func (f *fakeProvider) Read(context.Context, string, string, string) (*provider.Resource, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (f *fakeProvider) ReadAll(context.Context, string, string) ([]*provider.Resource, error) {
-	return nil, fmt.Errorf("not implemented")
+func (f *fakeProvider) ReadAll(_ context.Context, resourceType, locationID string) ([]*provider.Resource, error) {
+	if fakeState.readErr != nil {
+		return nil, fakeState.readErr
+	}
+	return fakeState.resources[resourceType+"@"+locationID], nil
 }
 
 func (f *fakeProvider) Create(context.Context, string, *provider.Resource, string) (string, error) {
@@ -104,11 +117,17 @@ func resetFakeState(t *testing.T, locations []provider.Location) {
 	fakeState.locations = locations
 	fakeState.listErr = nil
 	fakeState.configureErr = nil
+	fakeState.resourceTypes = nil
+	fakeState.resources = map[string][]*provider.Resource{}
+	fakeState.readErr = nil
 
 	t.Cleanup(func() {
 		fakeState.locations = nil
 		fakeState.listErr = nil
 		fakeState.configureErr = nil
+		fakeState.resourceTypes = nil
+		fakeState.resources = nil
+		fakeState.readErr = nil
 	})
 }
 

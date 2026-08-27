@@ -8,7 +8,7 @@ Mise is a configuration-as-code tool for restaurant POS platforms. It lets multi
 
 🚧 **Phase 0 — Foundation.** Building the core engine and Square POS adapter.
 
-`mise init` works against Square (sandbox and production). `fetch`, `plan`, `apply`, and `drift` are still stubs.
+`mise init` and `mise fetch` work against Square (sandbox and production). `plan`, `apply`, and `drift` are still stubs.
 
 ## How It Works
 
@@ -86,6 +86,63 @@ mise.yaml            provider settings and location groups (commit this)
 Non-interactive setups (CI, scripts) can supply every value by flag or
 environment variable; Mise fails with an actionable error rather than blocking
 on a prompt when there is no terminal.
+
+### Import your current configuration
+
+```bash
+mise fetch
+```
+
+Fetch reads every location on the account and every catalog resource — items,
+categories, taxes, discounts, modifier lists — and writes them out as YAML:
+
+```
+locations.yaml       your locations and their IDs (reference data)
+taxes.yaml           tax rates
+discounts.yaml       discount definitions
+menu/categories.yaml
+menu/items.yaml
+menu/modifiers.yaml
+.mise/state.json     name → provider ID mapping, for drift detection
+```
+
+A resource that exists at every location is written as `${group.all}`; one with
+a partial rollout gets an explicit location list:
+
+```yaml
+resources:
+  - type: square_catalog_tax
+    name: ga_state_sales_tax
+    locations: ${group.all}
+    properties:
+      name: GA State Sales Tax
+      percentage: "4.5"
+      enabled: true
+      calculation_phase: TAX_SUBTOTAL_PHASE
+      inclusion_type: ADDITIVE
+```
+
+Resources that point at each other keep that relationship by name rather than
+by opaque ID, so the files stay readable and portable:
+
+```yaml
+  - type: square_catalog_item
+    name: summer_lemonade
+    locations: ${group.all}
+    properties:
+      name: Summer Lemonade
+      category: ref(square_catalog_category.beverages)
+      tax_ids:
+        - ref(square_catalog_tax.ga_state_sales_tax)
+```
+
+Fetching twice with nothing changed produces byte-identical files, so a fetch
+never shows up as a spurious diff in git. Because fetch regenerates these files
+from the live POS, it prompts before overwriting them — pass `--force` to skip
+the prompt, and `--parallelism N` to change how many locations are read at once
+(default 10). It never touches `mise.yaml`.
+
+Commit the result. That git history is your rollback mechanism.
 
 ## Project Structure
 

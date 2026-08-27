@@ -76,6 +76,19 @@ type Location struct {
 	Metadata map[string]string `json:"metadata"` // Provider-specific fields
 }
 
+// Ref marks a property value that points at another resource by its
+// provider-assigned ID.
+//
+// Adapters emit these instead of raw IDs because only the adapter knows
+// which fields are references (Square's category_id, tax_ids, ...) while
+// only the engine knows what config name each resource ended up with.
+// The engine rewrites every Ref into "ref(type.name)" once naming is
+// settled, which is also how it discovers the dependency graph.
+type Ref struct {
+	ResourceType string // e.g. "square_catalog_category"
+	ProviderID   string // the referenced resource's provider-assigned ID
+}
+
 // Resource represents a single configurable entity on the POS
 // (a tax rate, a menu item, a discount, etc.).
 type Resource struct {
