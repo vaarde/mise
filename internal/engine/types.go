@@ -59,6 +59,12 @@ type ResourceChange struct {
 	ProviderID   string         `json:"provider_id"`   // existing ID (empty for creates)
 	LocationIDs  []string       `json:"location_ids"`  // affected locations
 	Diffs        []PropertyDiff `json:"diffs"`         // property-level changes
+
+	// Desired is the full property set the resource should end up with,
+	// with references already resolved to provider IDs. A saved plan
+	// carries this so 'mise apply --plan' can execute it without
+	// recomputing, exactly as previewed.
+	Desired map[string]interface{} `json:"desired,omitempty"`
 }
 
 // FullName returns "type.name" for display.

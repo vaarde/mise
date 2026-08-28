@@ -8,7 +8,7 @@ Mise is a configuration-as-code tool for restaurant POS platforms. It lets multi
 
 🚧 **Phase 0 — Foundation.** Building the core engine and Square POS adapter.
 
-`mise init` and `mise fetch` work against Square (sandbox and production). `plan`, `apply`, and `drift` are still stubs.
+`mise init`, `mise fetch`, and `mise plan` work against Square (sandbox and production). `apply` and `drift` are still stubs.
 
 ## How It Works
 
@@ -143,6 +143,37 @@ the prompt, and `--parallelism N` to change how many locations are read at once
 (default 10). It never touches `mise.yaml`.
 
 Commit the result. That git history is your rollback mechanism.
+
+### Preview a change
+
+Edit a YAML file, then see exactly what would change before anything is touched:
+
+```bash
+mise plan
+```
+
+```
+Mise will perform the following actions:
+
+  ~ square_catalog_tax.ga_state_sales_tax (3 locations)
+      percentage: "4.0" → "4.5"
+
+  + square_catalog_tax.summer_promo_tax (2 locations)
+      name       = "Summer Promo Tax"
+      percentage = "2.5"
+
+Plan: 1 to add, 1 to change, 0 to destroy.
+```
+
+Plan reads only — it writes nothing, not even state. Resources that exist on
+the POS but not in your config files are left alone; Mise manages what you
+declare and never proposes a destroy.
+
+Changing which locations a resource applies at shows up too, so widening a tax
+from three locations to forty is visible before you approve it.
+
+Flags: `--target <name>` for one resource, `--location <name-or-id>` for one
+location, and `--out <file>` to save the plan for a later `mise apply --plan`.
 
 ## Project Structure
 

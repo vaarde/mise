@@ -22,6 +22,7 @@ CLI (cobra commands) → Core Engine → Provider Interface → POS Adapter (Squ
 ```
 
 - **Core engine** (`internal/engine/`) — platform-agnostic plan/apply/drift logic
+- **Output formatting** (`pkg/output/`) — colored plan diffs and reports
 - **Provider interface** (`internal/provider/interface.go`) — the contract every POS adapter implements
 - **Provider registry** (`internal/provider/registry.go`) — maps platform names to adapter constructors
 - **Square adapter** (`internal/providers/square/`) — first POS adapter, uses Square Catalog + Locations APIs
@@ -65,22 +66,27 @@ make fmt          # Format all Go files
 
 ## Current Status
 
-Phase 0 — Foundation, Milestones 1 and 2 complete.
+Phase 0 — Foundation, Milestones 1, 2 and 3 complete.
 
 - `mise init` — OAuth2 authorization-code flow (local callback listener, anti-CSRF state, token exchange and refresh) and personal access tokens, credential verification via `GET /v2/locations`, workspace scaffolding.
 - `mise fetch` — reads the live catalog (items, categories, taxes, discounts, modifier lists) plus locations, deduplicates resources across locations, resolves cross-resource references, generates YAML config files, and writes `.mise/state.json`.
 
-`plan`, `apply`, and `drift` are still stubs, each with a TODO comment mapping to the PRD milestone where it gets implemented.
+- `mise plan` — loads the declared YAML, resolves `${group.*}` and `ref()`, reads live state, and prints a colored diff. Supports `--target`, `--location`, and `--out` for a saved plan.
+
+`apply` and `drift` are still stubs, each with a TODO comment mapping to the PRD milestone where it gets implemented.
 
 ## Known Design Decisions To Revisit
 
+- **Plan compares by provider ID, never by name.** Declared `ref(type.name)` is resolved to a provider ID through state before comparison, and live `provider.Ref` values are normalized to their IDs. Renaming a resource in YAML therefore does not read as a change to everything pointing at it. Drift (Milestone 5) must do the same.
+- **Plan canonicalizes values through JSON before comparing.** YAML decodes `450` as `int`, the Square client as `int64`, JSON as `float64`. Without that round-trip every price would show as changed on every plan.
+- **`--location` narrows both sides of the diff.** Scoping a plan to one location intersects the desired location set with the scope too; otherwise a resource that also applies elsewhere reads as "gained a location", which is an artifact of the filter.
 - **State stores resolved refs.** `.mise/state.json` records properties in the same shape as the config files, i.e. `"category": "ref(square_catalog_category.beverages)"`, not the raw provider ID. Drift (Milestone 5) compares stored state against live API reads, where references arrive as `provider.Ref` values — so drift must normalize before comparing, and should match live objects to state entries **by provider ID**, never by config name. Matching by name would be fragile: adding a resource whose slug collides with an existing one can shift the numeric suffixes.
 
 ## Milestone Sequence
 
 1. **Skeleton** (done) — Project structure, cobra CLI, provider interface, `mise init` with Square OAuth2 and access token auth
 2. **Fetch** (done) — `mise fetch` pulls live config from Square into YAML files and writes the initial state file
-3. **Plan** — `mise plan` computes diffs between declared YAML and live state
+3. **Plan** (done) — `mise plan` computes diffs between declared YAML and live state
 4. **Apply** — `mise apply` pushes changes to Square via batch API
 5. **Drift** — `mise drift` detects changes made outside Mise
 6. **Polish** — Integration tests, error handling, documentation
