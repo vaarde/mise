@@ -8,7 +8,7 @@ Mise is a configuration-as-code tool for restaurant POS platforms. It lets multi
 
 🚧 **Phase 0 — Foundation.** Building the core engine and Square POS adapter.
 
-`mise init`, `mise fetch`, `mise plan`, and `mise apply` work against Square (sandbox and production). `drift` is still a stub.
+All five commands — `init`, `fetch`, `plan`, `apply`, `drift` — work against Square (sandbox and production). Milestone 6 (integration tests, hardened errors, release builds) is the remaining Phase 0 work.
 
 ## How It Works
 
@@ -214,6 +214,45 @@ Flags: `--auto-approve` for CI, `--plan <file>` to apply a saved plan,
 
 Mise never deletes POS resources. A resource removed from your config files is
 left alone on the platform.
+
+### Catch changes made behind your back
+
+```bash
+mise drift
+```
+
+Compares the live POS against the last configuration Mise recorded, and reports
+anything someone changed elsewhere — a rate edited in the POS dashboard, a
+discount deleted by hand, another tool writing to the same account:
+
+```
+Drift detected:
+
+  - square_catalog_discount.happy_hour (2 locations)
+      no longer exists on the POS
+      ⚠ Deleted outside of Mise
+
+  ~ square_catalog_tax.tn_sales_tax (Nashville)
+      percentage: "9.75" (expected) → "9.25" (actual)
+      ⚠ Changed outside of Mise
+
+2 resources drifted across 2 locations.
+Baseline: last applied 2026-09-16 09:00:00 UTC
+```
+
+Drift reads only. It never touches the POS and never rewrites state — a drift
+report is evidence of a discrepancy, not permission to accept it. To accept the
+live values as the new baseline, run `mise fetch`; to push your config back over
+them, run `mise apply`.
+
+It exits **2** when drift is found, distinct from **1** for a failure, so a
+scheduled check can alert without parsing the output:
+
+```bash
+mise drift --json > report.json || [ $? -eq 2 ] && alert-someone < report.json
+```
+
+Flags: `--location <name-or-id>`, `--type <resource_type>`, `--json`.
 
 ### Roll back
 

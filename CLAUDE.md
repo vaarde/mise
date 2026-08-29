@@ -58,6 +58,7 @@ make fmt          # Format all Go files
 - Config names are derived by the engine: the platform's display name, slugified ("GA State Sales Tax" → `ga_state_sales_tax`). Collisions get a numeric suffix assigned in provider-ID order, so names stay stable across runs.
 - `mise fetch` must be idempotent — fetching twice with nothing changed produces byte-identical files. That means deterministic ordering everywhere: sorted resources, sorted keys, sorted reference lists.
 - The provider interface uses `context.Context` on all methods for cancellation and timeouts.
+- Commands exit 0 on success and 1 on failure, except `mise drift`, which exits 2 when drift is found so a scheduled check can tell "drift detected" from "the command broke". An error implementing `cmd.ExitCoder` chooses its own status; one implementing `Silent()` has already reported itself and is not printed again.
 - Error handling follows Go conventions: return errors, don't panic. API errors are classified as retryable (429, 5xx) or non-retryable (4xx).
 - Square sandbox (`https://connect.squareupsandbox.com/v2`) is used for all development and testing.
 - Secrets live only in `.mise/credentials` (0600, gitignored). `mise.yaml` records the auth *method*, never a token. `SQUARE_ACCESS_TOKEN` / `MISE_SQUARE_ACCESS_TOKEN` override the stored file so CI never runs `mise init`.
@@ -67,7 +68,7 @@ make fmt          # Format all Go files
 
 ## Current Status
 
-Phase 0 — Foundation, Milestones 1–4 complete.
+Phase 0 — Foundation, Milestones 1–5 complete. All five commands work end to end against Square.
 
 - `mise init` — OAuth2 authorization-code flow (local callback listener, anti-CSRF state, token exchange and refresh) and personal access tokens, credential verification via `GET /v2/locations`, workspace scaffolding.
 - `mise fetch` — reads the live catalog (items, categories, taxes, discounts, modifier lists) plus locations, deduplicates resources across locations, resolves cross-resource references, generates YAML config files, and writes `.mise/state.json`.
@@ -77,7 +78,9 @@ Phase 0 — Foundation, Milestones 1–4 complete.
 - `mise apply` — executes a plan in dependency order via Square's batch-upsert, with deterministic idempotency keys, version tokens for optimistic concurrency, a workspace lock, and partial-failure handling that records what landed.
 - `mise version` — build version, commit, and platform; `--json` for scripts.
 
-`drift` is still a stub, with a TODO comment mapping to the PRD milestone where it gets implemented.
+- `mise drift` — compares the last-known state against the live POS and reports what changed outside Mise. Read-only; exits 2 when drift is found so scheduled checks can alert without parsing output. Supports `--location`, `--type`, `--json`.
+
+Milestone 6 (polish: integration tests, hardened error handling, goreleaser) is the remaining work.
 
 ## Known Design Decisions To Revisit
 
@@ -88,7 +91,10 @@ Phase 0 — Foundation, Milestones 1–4 complete.
 - **`provider.Resource` has both `LocationID` and `LocationIDs`.** The singular one is read-side ("I saw this at location X"); the plural is write-side. Square creates one catalog object carrying its own `present_at_location_ids`, not one object per location, so writes need the whole set.
 - **`BatchApplier` is an optional provider capability.** Adapters that can write many resources per call implement it; the engine falls back to `Create`/`Update` otherwise, so a simpler adapter stays correct.
 - **A failed wave stops the apply.** Anything later depends on what just failed, so continuing would cascade confusing errors. State is still saved for what succeeded — otherwise a re-run would create those resources twice.
-- **State stores resolved refs.** `.mise/state.json` records properties in the same shape as the config files, i.e. `"category": "ref(square_catalog_category.beverages)"`, not the raw provider ID. Drift (Milestone 5) compares stored state against live API reads, where references arrive as `provider.Ref` values — so drift must normalize before comparing, and should match live objects to state entries **by provider ID**, never by config name. Matching by name would be fragile: adding a resource whose slug collides with an existing one can shift the numeric suffixes.
+- **State's reference shape depends on which command wrote it.** `fetch` records `"category": "ref(square_catalog_category.beverages)"`; `apply` records the resolved provider ID `"CAT_1"`. Drift has to tolerate both, so `engine.normalizeReferences` maps `provider.Ref`, `ref(type.name)` strings, and raw IDs onto one form (the provider ID) before comparing. Worth unifying eventually, but the normalizer makes the difference harmless and there are tests for both shapes. Anything comparing state against live must use it.
+- **Drift matches live objects to state entries by provider ID, never by config name.** A rename in YAML is not drift, and a slug collision must never make two resources look like each other.
+- **Drift is strictly read-only** — it does not update state. A drift report is evidence of a discrepancy, not permission to accept it; accepting means running `mise fetch`.
+- **Drift reports per resource, not per location, unlike the PRD's example.** Square's catalog is account-wide, so a changed tax at forty locations is one object, and grouping by location would print it forty times. Each drift names its affected locations instead. A location-scoped platform like Toast may want the PRD's grouping back.
 
 ## Milestone Sequence
 
@@ -96,7 +102,7 @@ Phase 0 — Foundation, Milestones 1–4 complete.
 2. **Fetch** (done) — `mise fetch` pulls live config from Square into YAML files and writes the initial state file
 3. **Plan** (done) — `mise plan` computes diffs between declared YAML and live state
 4. **Apply** — `mise apply` pushes changes to Square via batch API
-5. **Drift** — `mise drift` detects changes made outside Mise
+5. **Drift** (done) — `mise drift` detects changes made outside Mise
 6. **Polish** — Integration tests, error handling, documentation
 
 ## Square API Notes

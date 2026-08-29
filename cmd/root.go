@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -47,11 +48,43 @@ func init() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 }
 
+// ExitCoder is an error that carries its own process exit status.
+// 'mise drift' uses it so a scheduled check can distinguish "drift was
+// found" from "the command failed".
+type ExitCoder interface {
+	ExitCode() int
+}
+
+// silentError has already reported itself to the operator, so Execute
+// sets the exit status without printing an "Error:" line on top of a
+// report that already said the same thing.
+type silentError interface {
+	Silent() bool
+}
+
+// ExitCode returns the process exit status for an error.
+func ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+
+	var coder ExitCoder
+	if errors.As(err, &coder) {
+		return coder.ExitCode()
+	}
+	return 1
+}
+
 // Execute runs the root command. Called from main.go.
 func Execute() error {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return err
+	err := rootCmd.Execute()
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	var quiet silentError
+	if !errors.As(err, &quiet) || !quiet.Silent() {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	}
+	return err
 }
