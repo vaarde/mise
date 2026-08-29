@@ -1,0 +1,26 @@
+# Pin every text file to LF, in the repository and in the working tree.
+#
+# Everything committed here is already LF. This keeps it that way
+# regardless of a contributor's core.autocrlf setting, which on Windows
+# otherwise checks files out as CRLF — and a CRLF working copy makes
+# `gofmt -l` report the whole file as unformatted, so `make lint` fails
+# on files nobody touched.
+#
+# eol=lf rather than plain `text` so the working tree matches the
+# repository on every platform: shell scripts under scripts/ are run
+# through Git Bash on Windows and bash on CI, and CRLF breaks the
+# shebang on Linux with "bad interpreter: /bin/bash^M".
+
+* text=auto eol=lf
+
+*.go     text eol=lf
+*.md     text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.json   text eol=lf
+*.sh     text eol=lf
+Makefile text eol=lf
+
+*.exe binary
+*.png binary
+*.jpg binary
