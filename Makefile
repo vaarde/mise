@@ -1,4 +1,4 @@
-.PHONY: build install run test test-v lint fmt clean
+.PHONY: build install run test test-v test-race test-integration cover lint fmt clean
 
 # Windows needs the .exe suffix, or the binary cannot be executed.
 BINARY := mise
@@ -27,14 +27,30 @@ install:
 run:
 	go run -ldflags "$(LDFLAGS)" . $(ARGS)
 
-# Run all tests. -race needs cgo and a C compiler; without one, run
-# `go test ./...` directly and rely on CI for race coverage.
+# Run all unit tests. No network, no credentials needed.
 test:
-	go test -race ./...
+	go test ./...
 
 # Run tests with verbose output
 test-v:
-	go test -race -v ./...
+	go test -v ./...
+
+# Race detection needs cgo and a C compiler, which not every dev machine
+# has. CI runs this; locally, `make test` is the one that always works.
+test-race:
+	go test -race ./...
+
+# Run the integration suite against a real Square sandbox account.
+#
+# Needs SQUARE_ACCESS_TOKEN set to a *sandbox* token — these tests create,
+# modify, and delete catalog objects. Without one they skip rather than
+# fail, so this target is safe to run unconfigured.
+test-integration:
+	go test -tags integration ./cmd/ -run Integration -v -timeout 10m
+
+# Per-package coverage summary
+cover:
+	go test -cover ./...
 
 # Run linter (install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
 lint:

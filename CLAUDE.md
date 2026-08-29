@@ -46,10 +46,18 @@ The engine never calls POS APIs directly. It only talks to the Provider interfac
 make install      # build with version info and put `mise` on PATH
 make build        # Build binary to bin/mise
 make run ARGS="plan"  # Run without building
-make test         # Run all tests with race detection
+make test         # Run all unit tests (no network, no credentials)
+make test-race    # Adds race detection — needs cgo and a C compiler
+make test-integration  # Against a real Square sandbox; needs SQUARE_ACCESS_TOKEN
+make cover        # Per-package coverage
 make lint         # Run golangci-lint
 make fmt          # Format all Go files
 ```
+
+Integration tests live in `cmd/integration_test.go` behind a `//go:build
+integration` tag and skip without a sandbox token, so `go test ./...` never
+touches the network. They create and delete real catalog objects — sandbox
+only, and they refuse to run if `MISE_ALLOW_PRODUCTION` is set.
 
 ## Development Conventions
 
@@ -58,7 +66,7 @@ make fmt          # Format all Go files
 - Config names are derived by the engine: the platform's display name, slugified ("GA State Sales Tax" → `ga_state_sales_tax`). Collisions get a numeric suffix assigned in provider-ID order, so names stay stable across runs.
 - `mise fetch` must be idempotent — fetching twice with nothing changed produces byte-identical files. That means deterministic ordering everywhere: sorted resources, sorted keys, sorted reference lists.
 - The provider interface uses `context.Context` on all methods for cancellation and timeouts.
-- Commands exit 0 on success and 1 on failure, except `mise drift`, which exits 2 when drift is found so a scheduled check can tell "drift detected" from "the command broke". An error implementing `cmd.ExitCoder` chooses its own status; one implementing `Silent()` has already reported itself and is not printed again.
+- Commands exit 0 on success and 1 on failure, except `mise drift`, which exits 2 when drift is found so a scheduled check can tell "drift detected" from "the command broke". An error implementing `cmd.ExitCoder` chooses its own status; one implementing `Silent()` has already reported itself and is not printed again. A run stopped by Ctrl-C exits 130.
 - Error handling follows Go conventions: return errors, don't panic. API errors are classified as retryable (429, 5xx) or non-retryable (4xx).
 - Square sandbox (`https://connect.squareupsandbox.com/v2`) is used for all development and testing.
 - Secrets live only in `.mise/credentials` (0600, gitignored). `mise.yaml` records the auth *method*, never a token. `SQUARE_ACCESS_TOKEN` / `MISE_SQUARE_ACCESS_TOKEN` override the stored file so CI never runs `mise init`.
@@ -68,7 +76,7 @@ make fmt          # Format all Go files
 
 ## Current Status
 
-Phase 0 — Foundation, Milestones 1–5 complete. All five commands work end to end against Square.
+Phase 0 — Foundation, Milestones 1–6 complete except release packaging. All five commands work end to end against Square.
 
 - `mise init` — OAuth2 authorization-code flow (local callback listener, anti-CSRF state, token exchange and refresh) and personal access tokens, credential verification via `GET /v2/locations`, workspace scaffolding.
 - `mise fetch` — reads the live catalog (items, categories, taxes, discounts, modifier lists) plus locations, deduplicates resources across locations, resolves cross-resource references, generates YAML config files, and writes `.mise/state.json`.
@@ -80,7 +88,17 @@ Phase 0 — Foundation, Milestones 1–5 complete. All five commands work end to
 
 - `mise drift` — compares the last-known state against the live POS and reports what changed outside Mise. Read-only; exits 2 when drift is found so scheduled checks can alert without parsing output. Supports `--location`, `--type`, `--json`.
 
-Milestone 6 (polish: integration tests, hardened error handling, goreleaser) is the remaining work.
+Milestone 6 delivered the integration suite, hardened error handling, and docs.
+**goreleaser / release packaging is deliberately not done yet** — it is the only
+remaining Phase 0 item.
+
+Hardening added in Milestone 6:
+
+- **Transient network faults are retried.** A dropped keep-alive or connection reset used to fail a whole apply; `retryableNetworkError` now treats them as retryable, while still refusing to retry a cancelled context or an unresolvable host.
+- **`Retry-After` is honored** on 429, in both its seconds and HTTP-date forms, capped at 30s. Backoff otherwise uses equal jitter, so parallel per-location reads that hit the same 429 do not retry in lockstep.
+- **API errors carry a `Hint`** — a 401 says to check the environment and re-run `mise init --force` rather than just "UNAUTHORIZED", and error bodies are truncated at 512 bytes so an HTML error page from a proxy cannot bury the output.
+- **The rate limiter takes a context.** A fetch across many locations spends most of its time queued behind it, so an uncancellable `Wait` made Ctrl-C useless.
+- **Ctrl-C is handled, not fatal** — see the interrupt decision below.
 
 ## Known Design Decisions To Revisit
 
@@ -95,15 +113,18 @@ Milestone 6 (polish: integration tests, hardened error handling, goreleaser) is 
 - **Drift matches live objects to state entries by provider ID, never by config name.** A rename in YAML is not drift, and a slug collision must never make two resources look like each other.
 - **Drift is strictly read-only** — it does not update state. A drift report is evidence of a discrepancy, not permission to accept it; accepting means running `mise fetch`.
 - **Drift reports per resource, not per location, unlike the PRD's example.** Square's catalog is account-wide, so a changed tax at forty locations is one object, and grouping by location would print it forty times. Each drift names its affected locations instead. A location-scoped platform like Toast may want the PRD's grouping back.
+- **An interrupted write reports "unknown", never "failed".** The first Ctrl-C cancels the context so the deferred lock release and state save still run. But if the signal lands while a batch is in flight, Mise cannot know whether Square applied it — the request may have succeeded with the response lost. `engine.Apply` therefore returns an unknown-outcome error naming `mise drift`, and records nothing in `result.Failed`. Marking those resources failed would send the operator to re-create objects that already exist. Cancellation *between* waves is the clean case and stops with no failures at all.
+- **Cancellation is distinguished from failure everywhere it crosses a boundary.** The client returns `ctx.Err()` rather than "request failed"; `readAllLocations` returns `ctx.Err()` rather than "cannot read X at location Y", which would blame a location for the operator's own Ctrl-C; `cmd.ExitCode` maps `context.Canceled` to 130 but leaves `DeadlineExceeded` at 1, because a timeout means Mise gave up and that is a real failure.
+- **Integration tests refuse to run against production.** They create and delete catalog objects. They skip without a token, and `MISE_ALLOW_PRODUCTION` being set is a hard failure rather than an opt-in — there is deliberately no way to point them at a live restaurant's menu.
 
 ## Milestone Sequence
 
 1. **Skeleton** (done) — Project structure, cobra CLI, provider interface, `mise init` with Square OAuth2 and access token auth
 2. **Fetch** (done) — `mise fetch` pulls live config from Square into YAML files and writes the initial state file
 3. **Plan** (done) — `mise plan` computes diffs between declared YAML and live state
-4. **Apply** — `mise apply` pushes changes to Square via batch API
+4. **Apply** (done) — `mise apply` pushes changes to Square via batch API
 5. **Drift** (done) — `mise drift` detects changes made outside Mise
-6. **Polish** — Integration tests, error handling, documentation
+6. **Polish** (integration tests, error handling, documentation done; **goreleaser outstanding**)
 
 ## Square API Notes
 

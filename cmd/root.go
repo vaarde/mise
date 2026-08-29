@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -48,6 +49,10 @@ func init() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 }
 
+// ExitCodeInterrupted is the conventional status for a command stopped
+// by SIGINT: 128 plus the signal number.
+const ExitCodeInterrupted = 130
+
 // ExitCoder is an error that carries its own process exit status.
 // 'mise drift' uses it so a scheduled check can distinguish "drift was
 // found" from "the command failed".
@@ -72,14 +77,24 @@ func ExitCode(err error) int {
 	if errors.As(err, &coder) {
 		return coder.ExitCode()
 	}
+	if errors.Is(err, context.Canceled) {
+		return ExitCodeInterrupted
+	}
 	return 1
 }
 
 // Execute runs the root command. Called from main.go.
-func Execute() error {
-	err := rootCmd.Execute()
+func Execute(ctx context.Context) error {
+	err := rootCmd.ExecuteContext(ctx)
 	if err == nil {
 		return nil
+	}
+
+	// The interrupt handler already said what happened, and a
+	// "context canceled" line on top of it reads like a defect rather
+	// than the operator's own Ctrl-C.
+	if errors.Is(err, context.Canceled) {
+		return err
 	}
 
 	var quiet silentError

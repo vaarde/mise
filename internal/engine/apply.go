@@ -69,6 +69,13 @@ func Apply(
 	appliedAt := time.Now().UTC()
 
 	for _, wave := range waves {
+		// Cancelled between waves is the clean case: nothing in this one
+		// has been sent, so stop without inventing failures for it.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			st.LastApply = &appliedAt
+			return result, ctxErr
+		}
+
 		// References to resources created in an earlier wave can only be
 		// resolved now that those resources have provider IDs.
 		ops, skipped := buildOperations(wave, st)
@@ -80,6 +87,19 @@ func Apply(
 
 		outcomes, err := writeBatch(ctx, p, ops, opts.Parallelism)
 		if err != nil {
+			// Cancelled mid-write is the one case Mise cannot describe
+			// honestly as a failure: the request may have reached the POS
+			// and been applied even though the response never came back.
+			// Recording those resources as failed would send the operator
+			// to create things that already exist, so say what is actually
+			// known — that the outcome is unknown — and point at drift.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				st.LastApply = &appliedAt
+				return result, fmt.Errorf(
+					"apply interrupted while writing %d %s: whether the change reached the POS is unknown — run 'mise drift' before retrying: %w",
+					len(ops), pluralizeWord(len(ops), "resource", "resources"), ctxErr)
+			}
+
 			// The whole call failed, so nothing in this wave landed.
 			for _, op := range ops {
 				result.Failed = append(result.Failed, ApplyFailure{

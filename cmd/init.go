@@ -382,9 +382,11 @@ func validateCredentials(ctx context.Context, out io.Writer, opts initOptions, c
 
 	locations, err := p.ListLocations(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("could not verify credentials: %w\n"+
-			"Check that the token is for the %s environment and has catalog and merchant profile permissions",
-			err, opts.environment)
+		// The provider's own error carries the advice for the status it
+		// got back; naming the environment here is what that advice
+		// cannot know, and it is the most common thing to have wrong.
+		return nil, fmt.Errorf("could not verify credentials against the %s %s API: %w",
+			opts.platform, opts.environment, err)
 	}
 
 	if len(locations) == 0 {

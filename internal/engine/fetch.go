@@ -196,6 +196,12 @@ func readAllLocations(
 
 	wg.Wait()
 
+	// The operator's own Ctrl-C surfaces here as a read failure at
+	// whichever location noticed first, which reads like a fault at that
+	// location. Report the cancellation itself instead.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
 	if firstErr != nil {
 		return nil, firstErr
 	}

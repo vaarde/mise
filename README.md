@@ -8,7 +8,7 @@ Mise is a configuration-as-code tool for restaurant POS platforms. It lets multi
 
 🚧 **Phase 0 — Foundation.** Building the core engine and Square POS adapter.
 
-All five commands — `init`, `fetch`, `plan`, `apply`, `drift` — work against Square (sandbox and production). Milestone 6 (integration tests, hardened errors, release builds) is the remaining Phase 0 work.
+All five commands — `init`, `fetch`, `plan`, `apply`, `drift` — work against Square (sandbox and production), with an integration suite that exercises them against a real sandbox account. Release packaging (goreleaser) is the remaining Phase 0 work.
 
 ## How It Works
 
@@ -72,7 +72,9 @@ The token is read from a hidden prompt, or from `SQUARE_ACCESS_TOKEN` /
 screen, then catches the redirect on a local listener:
 
 ```bash
-mise init --environment sandbox --auth-method oauth2           --client-id "$SQUARE_APPLICATION_ID"           --client-secret "$SQUARE_APPLICATION_SECRET"
+mise init --environment sandbox --auth-method oauth2 \
+  --client-id "$SQUARE_APPLICATION_ID" \
+  --client-secret "$SQUARE_APPLICATION_SECRET"
 ```
 
 Register the redirect URL `http://localhost:8666/mise/callback` under **OAuth**
@@ -262,6 +264,84 @@ Configuration is YAML in git, so rollback is a git operation:
 git revert HEAD
 mise apply
 ```
+
+## Exit Codes
+
+| Code | Meaning |
+|-----:|---------|
+| `0` | Success. For `drift`, no drift was found. |
+| `1` | The command failed — bad credentials, an API error, invalid config. |
+| `2` | `mise drift` only: drift was detected. Not a failure. |
+| `130` | Interrupted with Ctrl-C. |
+
+`drift` separates 2 from 1 so a scheduled check can tell "someone changed the
+POS" from "the check itself broke". Everything else follows the usual
+convention.
+
+## Interrupting a Run
+
+Ctrl-C during `apply` is handled rather than fatal. The first one stops after
+the current step: in-flight requests are cancelled, the workspace lock is
+released, and state is written for every resource that already landed — so a
+re-run picks up where it left off instead of creating duplicates. A second
+Ctrl-C quits immediately.
+
+If an apply is interrupted *while a write is in flight*, Mise says so rather
+than guessing:
+
+```
+apply interrupted while writing 3 resources: whether the change reached the
+POS is unknown — run 'mise drift' before retrying
+```
+
+The request may have been applied with the response lost in transit. Recording
+those as failures would send you to re-create resources that already exist, so
+Mise reports the uncertainty and points at the command that resolves it.
+
+## Troubleshooting
+
+**`401 UNAUTHORIZED`** — the token is expired, revoked, or for the wrong
+environment. Sandbox tokens do not work against production and vice versa;
+check `provider.environment` in `mise.yaml`, then `mise init --force`.
+
+**`403 FORBIDDEN`** — the token is valid but under-scoped. Reading needs
+`ITEMS_READ` and `MERCHANT_PROFILE_READ`; `apply` also needs `ITEMS_WRITE`.
+
+**`429 TOO_MANY_REQUESTS`** — Mise retries these automatically, honouring
+Square's `Retry-After`. If it persists, lower `--parallelism`.
+
+**`workspace is locked`** — another `apply` is running, or one was killed
+outright. Locks older than ten minutes are broken automatically; otherwise
+delete `.mise/lock` once you have confirmed nothing else is running.
+
+**`no state to compare against`** — `drift` and `plan` need a baseline. Run
+`mise fetch` first.
+
+**Plan shows changes right after a fetch** — that should never happen and is a
+bug worth reporting. It means fetch and plan disagree about the shape of a
+resource.
+
+## Testing
+
+```bash
+make test               # unit tests — no network, no credentials
+make test-race          # adds race detection (needs cgo and a C compiler)
+make cover              # per-package coverage
+```
+
+Integration tests run the real commands against a real Square **sandbox**
+account. They are behind a build tag and skip without a token, so the default
+suite never touches the network:
+
+```bash
+SQUARE_ACCESS_TOKEN=EAAAl... make test-integration
+```
+
+They create, modify, and delete catalog objects, and clean up after
+themselves — point them only at a sandbox account. They cover what mocks
+cannot: that a second `fetch` is byte-identical, that a re-`apply` is a no-op
+rather than a duplicate create, that `drift` catches a change made in the
+Square dashboard, and that the rate limiter survives a sustained burst.
 
 ## Project Structure
 

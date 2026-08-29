@@ -21,6 +21,10 @@ type stubProvider struct {
 	resources map[string][]*provider.Resource
 	readErr   map[string]error
 
+	// beforeRead runs at the top of every ReadAll, so a test can cancel
+	// the run mid-flight.
+	beforeRead func()
+
 	mu            sync.Mutex
 	readAllCalls  int
 	maxConcurrent int
@@ -40,6 +44,10 @@ func (s *stubProvider) ResourceTypes() []string { return s.types }
 
 func (s *stubProvider) ReadAll(ctx context.Context, resourceType, locationID string) ([]*provider.Resource, error) {
 	key := resourceType + "@" + locationID
+
+	if s.beforeRead != nil {
+		s.beforeRead()
+	}
 
 	s.mu.Lock()
 	s.readAllCalls++
