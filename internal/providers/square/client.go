@@ -20,7 +20,15 @@ import (
 const (
 	// APIVersion pins the Square API version so that Square's own
 	// rollouts cannot change response shapes under Mise.
-	APIVersion = "2024-01-18"
+	//
+	// 2024-06-04 is the first version that stores an item's category as
+	// categories[] + reporting_category. Before it, Square accepted the
+	// older category_id field and silently discarded it — no error, the
+	// association simply never existed — so every item/category
+	// reference Mise wrote was lost. Moving the pin is what makes that
+	// field work at all; the integration suite covers the response
+	// shapes this changes.
+	APIVersion = "2024-06-04"
 
 	// requestTimeout bounds a single HTTP request. A batch-upsert of
 	// several thousand catalog objects is a genuinely slow call, so this

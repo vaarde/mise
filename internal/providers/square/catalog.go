@@ -71,14 +71,29 @@ type money struct {
 }
 
 type itemData struct {
-	Name             string             `json:"name"`
-	Description      string             `json:"description"`
-	Abbreviation     string             `json:"abbreviation"`
-	CategoryID       string             `json:"category_id"`
-	TaxIDs           []string           `json:"tax_ids"`
-	ProductType      string             `json:"product_type"`
-	Variations       []catalogObject    `json:"variations"`
-	ModifierListInfo []modifierListInfo `json:"modifier_list_info"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Abbreviation string `json:"abbreviation"`
+
+	// CategoryID is Square's pre-2024-06-04 single-category field. It is
+	// read so that objects written before the pin moved still resolve,
+	// but it is never written — Square ignores it now.
+	CategoryID string `json:"category_id,omitempty"`
+
+	// Categories is the current shape: an item can sit in several
+	// categories, and ReportingCategory names the one it reports under.
+	Categories        []categoryRef      `json:"categories"`
+	ReportingCategory *categoryRef       `json:"reporting_category"`
+	TaxIDs            []string           `json:"tax_ids"`
+	ProductType       string             `json:"product_type"`
+	Variations        []catalogObject    `json:"variations"`
+	ModifierListInfo  []modifierListInfo `json:"modifier_list_info"`
+}
+
+// categoryRef is one entry in an item's categories list.
+type categoryRef struct {
+	ID      string `json:"id"`
+	Ordinal int    `json:"ordinal"`
 }
 
 type modifierListInfo struct {
@@ -295,8 +310,8 @@ func (o catalogObject) properties() map[string]interface{} {
 
 		// References are emitted as provider.Ref so the engine can turn
 		// them into ref(type.name) once every resource has a name.
-		if d.CategoryID != "" {
-			props["category"] = provider.Ref{ResourceType: TypeCategory, ProviderID: d.CategoryID}
+		if categoryID := primaryCategoryID(d); categoryID != "" {
+			props["category"] = provider.Ref{ResourceType: TypeCategory, ProviderID: categoryID}
 		}
 		if taxes := refsFor(TypeTax, d.TaxIDs); len(taxes) > 0 {
 			props["tax_ids"] = taxes
@@ -361,6 +376,37 @@ func modifierListRefs(infos []modifierListInfo) []interface{} {
 
 // refsFor wraps a list of provider IDs as references of one type,
 // sorted so that fetch output does not churn between runs.
+// primaryCategoryID returns the one category Mise tracks for an item.
+//
+// Square models this three ways depending on when the object was
+// written: reporting_category (the current answer to "which category
+// does this item belong to"), a categories list, or the retired
+// category_id. Mise's config exposes a single `category`, so the
+// reporting category wins, then the lowest-ordinal entry in the list,
+// then the legacy field. Ordinal decides rather than array position so
+// that a re-ordered list does not read as a change on the next fetch.
+func primaryCategoryID(d *itemData) string {
+	if d.ReportingCategory != nil && d.ReportingCategory.ID != "" {
+		return d.ReportingCategory.ID
+	}
+
+	best := ""
+	bestOrdinal := 0
+	for _, c := range d.Categories {
+		if c.ID == "" {
+			continue
+		}
+		if best == "" || c.Ordinal < bestOrdinal {
+			best, bestOrdinal = c.ID, c.Ordinal
+		}
+	}
+	if best != "" {
+		return best
+	}
+
+	return d.CategoryID
+}
+
 func refsFor(resourceType string, ids []string) []interface{} {
 	sorted := append([]string(nil), ids...)
 	sort.Strings(sorted)

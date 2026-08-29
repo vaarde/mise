@@ -46,6 +46,11 @@ type SquareProvider struct {
 	// so the cache never outlives a single run.
 	catalogMu    sync.Mutex
 	catalogCache map[string][]catalogObject
+
+	// locationCache backs the account-wide-scope check on write, so a
+	// batch does not re-list locations per operation.
+	locationMu    sync.Mutex
+	locationCache []string
 }
 
 // Register the Square provider with the provider registry.

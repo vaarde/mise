@@ -61,6 +61,9 @@ func (p *SquareProvider) ApplyBatch(ctx context.Context, ops []provider.WriteOpe
 	if len(ops) > maxBatchObjects {
 		return nil, fmt.Errorf("batch of %d objects exceeds Square's limit of %d", len(ops), maxBatchObjects)
 	}
+	if err := p.checkLocationScope(ctx, ops); err != nil {
+		return nil, err
+	}
 
 	outcomes := make([]provider.WriteOutcome, len(ops))
 	objects := make([]map[string]interface{}, 0, len(ops))
@@ -251,9 +254,9 @@ func catalogObjectFor(op provider.WriteOperation) (map[string]interface{}, strin
 		}
 	}
 
-	applyLocationScope(object, op.Resource.LocationIDs)
+	applyLocationScope(object, op.Resource.Type, op.Resource.LocationIDs)
 
-	data, err := typeDataFor(op.Resource.Type, op.Resource.Properties)
+	data, err := typeDataFor(op.Resource.Type, op.Resource.Properties, op.Resource.LocationIDs)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %w", op.Name, err)
 	}
@@ -262,9 +265,20 @@ func catalogObjectFor(op provider.WriteOperation) (map[string]interface{}, strin
 	return object, clientID, nil
 }
 
+// accountWideOnlyTypes are Mise resource types whose Square counterpart
+// cannot carry a per-location presence list.
+//
+// Square rejects an explicit present_at_location_ids on a CATEGORY with
+// "Unexpected unit-overridden attribute for definition
+// present_at_all_locations" — categories exist for the whole account or
+// not at all. Every other catalog type Mise supports accepts a list.
+var accountWideOnlyTypes = map[string]bool{
+	TypeCategory: true,
+}
+
 // applyLocationScope sets the location fields Square uses for scoping.
-func applyLocationScope(object map[string]interface{}, locationIDs []string) {
-	if len(locationIDs) == 0 {
+func applyLocationScope(object map[string]interface{}, resourceType string, locationIDs []string) {
+	if len(locationIDs) == 0 || accountWideOnlyTypes[resourceType] {
 		object["present_at_all_locations"] = true
 		return
 	}
@@ -276,8 +290,66 @@ func applyLocationScope(object map[string]interface{}, locationIDs []string) {
 	object["present_at_location_ids"] = sorted
 }
 
+// checkLocationScope rejects a narrower scope than Square can express.
+//
+// Widening it silently would be worse: the operator would have declared
+// a category at two of their forty locations, seen the apply succeed,
+// and only discovered from the next fetch that it had gone up
+// everywhere.
+func (p *SquareProvider) checkLocationScope(ctx context.Context, ops []provider.WriteOperation) error {
+	var scoped []provider.WriteOperation
+	for _, op := range ops {
+		if accountWideOnlyTypes[op.Resource.Type] && len(op.Resource.LocationIDs) > 0 {
+			scoped = append(scoped, op)
+		}
+	}
+	if len(scoped) == 0 {
+		return nil
+	}
+
+	account, err := p.accountLocationIDs(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, op := range scoped {
+		if len(op.Resource.LocationIDs) >= len(account) {
+			continue // covers the account; writing it account-wide is exact
+		}
+		return fmt.Errorf(
+			"%s: Square applies categories to every location, so %s cannot be scoped to %d of %d — use ${group.all}",
+			op.Name, op.Resource.Type, len(op.Resource.LocationIDs), len(account))
+	}
+
+	return nil
+}
+
+// accountLocationIDs returns every location ID on the account, cached
+// for the life of the provider. Commands build a fresh provider, so it
+// never outlives one run.
+func (p *SquareProvider) accountLocationIDs(ctx context.Context) ([]string, error) {
+	p.locationMu.Lock()
+	defer p.locationMu.Unlock()
+
+	if p.locationCache != nil {
+		return p.locationCache, nil
+	}
+
+	locations, err := p.client.ListLocations(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make([]string, 0, len(locations))
+	for _, l := range locations {
+		ids = append(ids, l.ID)
+	}
+	p.locationCache = ids
+	return ids, nil
+}
+
 // typeDataFor renders Mise properties into Square's "<type>_data" shape.
-func typeDataFor(resourceType string, properties map[string]interface{}) (map[string]interface{}, error) {
+func typeDataFor(resourceType string, properties map[string]interface{}, locationIDs []string) (map[string]interface{}, error) {
 	switch resourceType {
 	case TypeTax:
 		return passThrough(properties, "name", "calculation_phase", "inclusion_type",
@@ -293,12 +365,12 @@ func typeDataFor(resourceType string, properties map[string]interface{}) (map[st
 	case TypeModifierList:
 		data := passThrough(properties, "name", "selection_type")
 		if modifiers, ok := properties["modifiers"].([]interface{}); ok {
-			data["modifiers"] = buildModifiers(modifiers)
+			data["modifiers"] = buildModifiers(modifiers, resourceType, locationIDs)
 		}
 		return data, nil
 
 	case TypeItem:
-		return buildItemData(properties)
+		return buildItemData(properties, resourceType, locationIDs)
 
 	default:
 		return nil, unsupportedTypeError(resourceType)
@@ -307,11 +379,18 @@ func typeDataFor(resourceType string, properties map[string]interface{}) (map[st
 
 // buildItemData assembles item_data, including the nested variations and
 // the reference fields that arrive as provider IDs.
-func buildItemData(properties map[string]interface{}) (map[string]interface{}, error) {
+func buildItemData(properties map[string]interface{}, resourceType string, locationIDs []string) (map[string]interface{}, error) {
 	data := passThrough(properties, "name", "description", "abbreviation", "product_type")
 
+	// Square stopped storing category_id as of 2024-06-04: it accepts the
+	// field and silently discards it. The category has to go up as the
+	// categories list plus a reporting_category, or the association is
+	// lost with no error to say so.
 	if category, ok := properties["category"].(string); ok && category != "" {
-		data["category_id"] = category
+		data["categories"] = []map[string]interface{}{
+			{"id": category, "ordinal": 0},
+		}
+		data["reporting_category"] = map[string]interface{}{"id": category, "ordinal": 0}
 	}
 
 	if taxIDs := stringsFrom(properties["tax_ids"]); len(taxIDs) > 0 {
@@ -327,7 +406,7 @@ func buildItemData(properties map[string]interface{}) (map[string]interface{}, e
 	}
 
 	if variations, ok := properties["variations"].([]interface{}); ok {
-		built, err := buildVariations(variations)
+		built, err := buildVariations(variations, resourceType, locationIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -338,7 +417,7 @@ func buildItemData(properties map[string]interface{}) (map[string]interface{}, e
 }
 
 // buildVariations renders an item's variations as ITEM_VARIATION objects.
-func buildVariations(variations []interface{}) ([]map[string]interface{}, error) {
+func buildVariations(variations []interface{}, resourceType string, locationIDs []string) ([]map[string]interface{}, error) {
 	out := make([]map[string]interface{}, 0, len(variations))
 
 	for i, raw := range variations {
@@ -357,19 +436,24 @@ func buildVariations(variations []interface{}) ([]map[string]interface{}, error)
 			data["pricing_type"] = "FIXED_PRICING"
 		}
 
-		out = append(out, map[string]interface{}{
-			"type":                     "ITEM_VARIATION",
-			"id":                       "#variation_" + slugForID(name) + "_" + strconv.Itoa(i),
-			"present_at_all_locations": true,
-			"item_variation_data":      data,
-		})
+		// A variation must not be present at more locations than the
+		// item it belongs to, or Square rejects the batch with
+		// "enabled at all future locations, but the referenced object
+		// ... is not".
+		variation := map[string]interface{}{
+			"type":                "ITEM_VARIATION",
+			"id":                  "#variation_" + slugForID(name) + "_" + strconv.Itoa(i),
+			"item_variation_data": data,
+		}
+		applyLocationScope(variation, resourceType, locationIDs)
+		out = append(out, variation)
 	}
 
 	return out, nil
 }
 
 // buildModifiers renders a modifier list's modifiers.
-func buildModifiers(modifiers []interface{}) []map[string]interface{} {
+func buildModifiers(modifiers []interface{}, resourceType string, locationIDs []string) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(modifiers))
 
 	for i, raw := range modifiers {
@@ -379,12 +463,14 @@ func buildModifiers(modifiers []interface{}) []map[string]interface{} {
 		}
 		name, _ := entry["name"].(string)
 
-		out = append(out, map[string]interface{}{
-			"type":                     "MODIFIER",
-			"id":                       "#modifier_" + slugForID(name) + "_" + strconv.Itoa(i),
-			"present_at_all_locations": true,
-			"modifier_data":            passThrough(entry, "name", "price_money"),
-		})
+		// Same rule as variations: a modifier inherits its list's scope.
+		modifier := map[string]interface{}{
+			"type":          "MODIFIER",
+			"id":            "#modifier_" + slugForID(name) + "_" + strconv.Itoa(i),
+			"modifier_data": passThrough(entry, "name", "price_money"),
+		}
+		applyLocationScope(modifier, resourceType, locationIDs)
+		out = append(out, modifier)
 	}
 
 	return out

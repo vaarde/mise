@@ -202,7 +202,15 @@ func TestApplyBatchBuildsItemWithReferencesAndVariations(t *testing.T) {
 
 	data := srv.lastObjects(t)[0]["item_data"].(map[string]interface{})
 	assert.Equal(t, "Summer Lemonade", data["name"])
-	assert.Equal(t, "CAT_BEV", data["category_id"], "a resolved reference becomes Square's category_id")
+	// Square discards category_id as of 2024-06-04, so the association
+	// has to go up as categories[] plus reporting_category.
+	assert.Nil(t, data["category_id"], "the retired field must not be sent")
+	assert.Equal(t,
+		[]interface{}{map[string]interface{}{"id": "CAT_BEV", "ordinal": float64(0)}},
+		data["categories"])
+	assert.Equal(t,
+		map[string]interface{}{"id": "CAT_BEV", "ordinal": float64(0)},
+		data["reporting_category"])
 	assert.Equal(t, []interface{}{"TAX_1", "TAX_2"}, data["tax_ids"])
 
 	info := data["modifier_list_info"].([]interface{})

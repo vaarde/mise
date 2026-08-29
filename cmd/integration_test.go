@@ -326,6 +326,72 @@ func TestIntegrationDriftDetectsAnOutOfBandChange(t *testing.T) {
 	assert.Contains(t, out, "Changed outside of Mise")
 }
 
+func TestIntegrationItemCategoryRoundTrip(t *testing.T) {
+	token := requireSandbox(t)
+	dir := t.TempDir()
+	initSandboxWorkspace(t, dir, token)
+
+	_, err := runFetchInWorkspace(t, dir, false)
+	require.NoError(t, err)
+
+	suffix := time.Now().UnixNano()
+	categoryDisplay := fmt.Sprintf("Mise Integration Category %d", suffix)
+	itemDisplay := fmt.Sprintf("Mise Integration Item %d", suffix)
+	categoryName := slugForTest(categoryDisplay)
+	itemName := slugForTest(itemDisplay)
+
+	appendCategory(t, dir, categoryDisplay)
+	appendItem(t, dir, itemDisplay, categoryName)
+
+	// Two waves: the category has no provider ID until it is created, so
+	// the item's ref() can only resolve afterwards.
+	out, err := runApplyInWorkspace(t, dir, true, "", "")
+	require.NoError(t, err, "apply failed:\n%s", out)
+
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+
+	categoryEntry := st.Resources[state.ResourceKey(square.TypeCategory, categoryName)]
+	itemEntry := st.Resources[state.ResourceKey(square.TypeItem, itemName)]
+	require.NotNil(t, categoryEntry)
+	require.NotNil(t, itemEntry)
+
+	t.Cleanup(func() {
+		p := sandboxClient(t, token)
+		for _, target := range []struct {
+			resourceType string
+			id           string
+		}{
+			{square.TypeItem, itemEntry.ProviderID},
+			{square.TypeCategory, categoryEntry.ProviderID},
+		} {
+			if err := p.Delete(context.Background(), target.resourceType, target.id, ""); err != nil {
+				t.Logf("could not clean up %s: %v", target.id, err)
+			}
+		}
+	})
+
+	// The association must exist on Square, not merely in Mise's state.
+	// Square silently discarded the retired category_id field, so this
+	// assertion is the whole point of the test: it fails against the
+	// write path Mise used before, with no API error to hint at why.
+	live, err := sandboxClient(t, token).Read(context.Background(), square.TypeItem, itemEntry.ProviderID, "")
+	require.NoError(t, err)
+
+	// The adapter emits references as provider.Ref; the engine is what
+	// turns them into ref(type.name).
+	assert.Equal(t,
+		provider.Ref{ResourceType: square.TypeCategory, ProviderID: categoryEntry.ProviderID},
+		live.Properties["category"],
+		"the item's category must actually be stored on Square")
+
+	// And it survives the round trip back into config.
+	out, err = runPlanInWorkspace(t, dir, "", "", "")
+	require.NoError(t, err, "plan failed:\n%s", out)
+	assert.Contains(t, out, "No changes",
+		"a stored category must not read as a pending change; got:\n%s", out)
+}
+
 func TestIntegrationDriftIsReadOnly(t *testing.T) {
 	token := requireSandbox(t)
 	dir := t.TempDir()
@@ -394,6 +460,59 @@ func appendTax(t *testing.T, dir, displayName, percentage string) string {
 	require.NoError(t, os.WriteFile(path, []byte(content+block), 0o644))
 
 	return resourceName
+}
+
+// appendCategory adds a category to menu/categories.yaml.
+func appendCategory(t *testing.T, dir, displayName string) {
+	t.Helper()
+
+	appendResource(t, filepath.Join(dir, "menu", "categories.yaml"), fmt.Sprintf(
+		`  - type: %s
+    name: %s
+    locations: ${group.all}
+    properties:
+      name: %s
+`, square.TypeCategory, slugForTest(displayName), displayName))
+}
+
+// appendItem adds an item that references a category by name.
+func appendItem(t *testing.T, dir, displayName, categoryName string) {
+	t.Helper()
+
+	appendResource(t, filepath.Join(dir, "menu", "items.yaml"), fmt.Sprintf(
+		`  - type: %s
+    name: %s
+    locations: ${group.all}
+    properties:
+      name: %s
+      category: ref(%s.%s)
+      variations:
+        - name: Regular
+          pricing_type: FIXED_PRICING
+          price_money:
+            amount: 500
+            currency: USD
+`, square.TypeItem, slugForTest(displayName), displayName, square.TypeCategory, categoryName))
+}
+
+// appendResource adds a resource block to a config file, creating it if
+// the account had nothing of that type for fetch to write.
+func appendResource(t *testing.T, path, block string) {
+	t.Helper()
+
+	existing, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte("resources:\n"+block), 0o644))
+		return
+	}
+	require.NoError(t, err)
+
+	content := string(existing)
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	require.NoError(t, os.WriteFile(path, []byte(content+block), 0o644))
 }
 
 // slugForTest mirrors the engine's naming so the test can predict the
