@@ -195,6 +195,7 @@ func TestIntegrationApplyRoundTrip(t *testing.T) {
 
 	displayName := testTaxName()
 	resourceName := appendTax(t, dir, displayName, "7.25")
+	cleanupResources(t, token, dir, []string{square.TypeTax, resourceName})
 
 	// Plan sees exactly one create.
 	out, err := runPlanInWorkspace(t, dir, "", "", "")
@@ -212,15 +213,6 @@ func TestIntegrationApplyRoundTrip(t *testing.T) {
 	entry := st.Resources[state.ResourceKey(square.TypeTax, resourceName)]
 	require.NotNil(t, entry, "apply must record what it created")
 	require.NotEmpty(t, entry.ProviderID, "Square's assigned ID must land in state")
-
-	// Whatever happens next, do not leave the object behind in a shared
-	// sandbox account.
-	t.Cleanup(func() {
-		p := sandboxClient(t, token)
-		if err := p.Delete(context.Background(), square.TypeTax, entry.ProviderID, ""); err != nil {
-			t.Logf("could not clean up %s: %v", entry.ProviderID, err)
-		}
-	})
 
 	// The tax really is on Square now, with the values that were declared.
 	live, err := sandboxClient(t, token).Read(context.Background(), square.TypeTax, entry.ProviderID, "")
@@ -244,6 +236,7 @@ func TestIntegrationApplyIsIdempotentOnRerun(t *testing.T) {
 	require.NoError(t, err)
 
 	resourceName := appendTax(t, dir, testTaxName(), "3.5")
+	cleanupResources(t, token, dir, []string{square.TypeTax, resourceName})
 
 	_, err = runApplyInWorkspace(t, dir, true, "", "")
 	require.NoError(t, err)
@@ -253,13 +246,6 @@ func TestIntegrationApplyIsIdempotentOnRerun(t *testing.T) {
 	entry := st.Resources[state.ResourceKey(square.TypeTax, resourceName)]
 	require.NotNil(t, entry)
 	firstID := entry.ProviderID
-
-	t.Cleanup(func() {
-		p := sandboxClient(t, token)
-		if err := p.Delete(context.Background(), square.TypeTax, firstID, ""); err != nil {
-			t.Logf("could not clean up %s: %v", firstID, err)
-		}
-	})
 
 	// Applying again must be a no-op rather than a second create. This is
 	// what the deterministic idempotency key buys, and it can only be
@@ -284,6 +270,7 @@ func TestIntegrationDriftDetectsAnOutOfBandChange(t *testing.T) {
 
 	displayName := testTaxName()
 	resourceName := appendTax(t, dir, displayName, "5.0")
+	cleanupResources(t, token, dir, []string{square.TypeTax, resourceName})
 
 	_, err = runApplyInWorkspace(t, dir, true, "", "")
 	require.NoError(t, err)
@@ -292,13 +279,6 @@ func TestIntegrationDriftDetectsAnOutOfBandChange(t *testing.T) {
 	require.NoError(t, err)
 	entry := st.Resources[state.ResourceKey(square.TypeTax, resourceName)]
 	require.NotNil(t, entry)
-
-	t.Cleanup(func() {
-		p := sandboxClient(t, token)
-		if err := p.Delete(context.Background(), square.TypeTax, entry.ProviderID, ""); err != nil {
-			t.Logf("could not clean up %s: %v", entry.ProviderID, err)
-		}
-	})
 
 	// Clean immediately after an apply.
 	out, err := runDriftInWorkspace(t, dir, "", "", false)
@@ -343,6 +323,14 @@ func TestIntegrationItemCategoryRoundTrip(t *testing.T) {
 	appendCategory(t, dir, categoryDisplay)
 	appendItem(t, dir, itemDisplay, categoryName)
 
+	// Registered before the apply, and reading state at cleanup time
+	// rather than closing over it: a partially-failed apply still
+	// created something, and a leaked object in a shared sandbox
+	// outlives the run that made it.
+	cleanupResources(t, token, dir,
+		[]string{square.TypeItem, itemName},
+		[]string{square.TypeCategory, categoryName})
+
 	// Two waves: the category has no provider ID until it is created, so
 	// the item's ref() can only resolve afterwards.
 	out, err := runApplyInWorkspace(t, dir, true, "", "")
@@ -355,21 +343,6 @@ func TestIntegrationItemCategoryRoundTrip(t *testing.T) {
 	itemEntry := st.Resources[state.ResourceKey(square.TypeItem, itemName)]
 	require.NotNil(t, categoryEntry)
 	require.NotNil(t, itemEntry)
-
-	t.Cleanup(func() {
-		p := sandboxClient(t, token)
-		for _, target := range []struct {
-			resourceType string
-			id           string
-		}{
-			{square.TypeItem, itemEntry.ProviderID},
-			{square.TypeCategory, categoryEntry.ProviderID},
-		} {
-			if err := p.Delete(context.Background(), target.resourceType, target.id, ""); err != nil {
-				t.Logf("could not clean up %s: %v", target.id, err)
-			}
-		}
-	})
 
 	// The association must exist on Square, not merely in Mise's state.
 	// Square silently discarded the retired category_id field, so this
@@ -460,6 +433,41 @@ func appendTax(t *testing.T, dir, displayName, percentage string) string {
 	require.NoError(t, os.WriteFile(path, []byte(content+block), 0o644))
 
 	return resourceName
+}
+
+// cleanupResources deletes whatever the named resources turned out to
+// be, reading state when the test ends rather than when it is called.
+//
+// Registering this before the apply is deliberate: an apply that fails
+// half way still created something, and a test that only cleans up on
+// the happy path leaves objects behind in a shared sandbox account.
+// Each entry is {resourceType, configName}, deleted in the order given.
+func cleanupResources(t *testing.T, token, dir string, resources ...[]string) {
+	t.Helper()
+
+	t.Cleanup(func() {
+		st, err := state.Load(dir)
+		if err != nil {
+			t.Logf("could not load state to clean up: %v", err)
+			return
+		}
+
+		var p provider.Provider
+		for _, res := range resources {
+			resourceType, name := res[0], res[1]
+
+			entry := st.Resources[state.ResourceKey(resourceType, name)]
+			if entry == nil || entry.ProviderID == "" {
+				continue
+			}
+			if p == nil {
+				p = sandboxClient(t, token)
+			}
+			if err := p.Delete(context.Background(), resourceType, entry.ProviderID, ""); err != nil {
+				t.Logf("could not clean up %s (%s): %v", name, entry.ProviderID, err)
+			}
+		}
+	})
 }
 
 // appendCategory adds a category to menu/categories.yaml.
