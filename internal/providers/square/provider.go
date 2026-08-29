@@ -186,6 +186,14 @@ func (p *SquareProvider) catalogObjects(ctx context.Context, squareType string) 
 	return objects, nil
 }
 
+// withType returns a copy of a resource with its type set, so callers
+// that pass the type separately still produce a complete resource.
+func withType(resource *provider.Resource, resourceType string) *provider.Resource {
+	clone := *resource
+	clone.Type = resourceType
+	return &clone
+}
+
 // locationResource renders a location as a Mise resource, so locations
 // can be read through the same interface as catalog objects.
 func locationResource(l provider.Location) *provider.Resource {
@@ -212,17 +220,4 @@ func unsupportedTypeError(resourceType string) error {
 		resourceType, supportedResourceTypes)
 }
 
-func (p *SquareProvider) Create(ctx context.Context, resourceType string, desired *provider.Resource, locationID string) (string, error) {
-	// TODO: Milestone 4 — dispatch to type-specific create function
-	return "", fmt.Errorf("not yet implemented")
-}
-
-func (p *SquareProvider) Update(ctx context.Context, resourceType string, id string, desired *provider.Resource, locationID string) error {
-	// TODO: Milestone 4 — dispatch to type-specific update function
-	return fmt.Errorf("not yet implemented")
-}
-
-func (p *SquareProvider) Delete(ctx context.Context, resourceType string, id string, locationID string) error {
-	// TODO: Milestone 4 — dispatch to type-specific delete function
-	return fmt.Errorf("not yet implemented")
-}
+// Create, Update, Delete, and ApplyBatch live in apply.go.

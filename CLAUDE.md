@@ -43,6 +43,7 @@ The engine never calls POS APIs directly. It only talks to the Provider interfac
 ## Common Commands
 
 ```bash
+make install      # build with version info and put `mise` on PATH
 make build        # Build binary to bin/mise
 make run ARGS="plan"  # Run without building
 make test         # Run all tests with race detection
@@ -66,20 +67,27 @@ make fmt          # Format all Go files
 
 ## Current Status
 
-Phase 0 — Foundation, Milestones 1, 2 and 3 complete.
+Phase 0 — Foundation, Milestones 1–4 complete.
 
 - `mise init` — OAuth2 authorization-code flow (local callback listener, anti-CSRF state, token exchange and refresh) and personal access tokens, credential verification via `GET /v2/locations`, workspace scaffolding.
 - `mise fetch` — reads the live catalog (items, categories, taxes, discounts, modifier lists) plus locations, deduplicates resources across locations, resolves cross-resource references, generates YAML config files, and writes `.mise/state.json`.
 
 - `mise plan` — loads the declared YAML, resolves `${group.*}` and `ref()`, reads live state, and prints a colored diff. Supports `--target`, `--location`, and `--out` for a saved plan.
 
-`apply` and `drift` are still stubs, each with a TODO comment mapping to the PRD milestone where it gets implemented.
+- `mise apply` — executes a plan in dependency order via Square's batch-upsert, with deterministic idempotency keys, version tokens for optimistic concurrency, a workspace lock, and partial-failure handling that records what landed.
+- `mise version` — build version, commit, and platform; `--json` for scripts.
+
+`drift` is still a stub, with a TODO comment mapping to the PRD milestone where it gets implemented.
 
 ## Known Design Decisions To Revisit
 
 - **Plan compares by provider ID, never by name.** Declared `ref(type.name)` is resolved to a provider ID through state before comparison, and live `provider.Ref` values are normalized to their IDs. Renaming a resource in YAML therefore does not read as a change to everything pointing at it. Drift (Milestone 5) must do the same.
 - **Plan canonicalizes values through JSON before comparing.** YAML decodes `450` as `int`, the Square client as `int64`, JSON as `float64`. Without that round-trip every price would show as changed on every plan.
 - **`--location` narrows both sides of the diff.** Scoping a plan to one location intersects the desired location set with the scope too; otherwise a resource that also applies elsewhere reads as "gained a location", which is an artifact of the filter.
+- **Apply orders changes into dependency waves, not a flat list.** `engine.OrderChanges` groups changes so everything in one wave is independent and can go up in a single batch; references to resources created in an earlier wave are resolved between waves, once those resources have provider IDs. Only dependencies *within the plan* constrain ordering — a reference to something already live imposes none.
+- **`provider.Resource` has both `LocationID` and `LocationIDs`.** The singular one is read-side ("I saw this at location X"); the plural is write-side. Square creates one catalog object carrying its own `present_at_location_ids`, not one object per location, so writes need the whole set.
+- **`BatchApplier` is an optional provider capability.** Adapters that can write many resources per call implement it; the engine falls back to `Create`/`Update` otherwise, so a simpler adapter stays correct.
+- **A failed wave stops the apply.** Anything later depends on what just failed, so continuing would cascade confusing errors. State is still saved for what succeeded — otherwise a re-run would create those resources twice.
 - **State stores resolved refs.** `.mise/state.json` records properties in the same shape as the config files, i.e. `"category": "ref(square_catalog_category.beverages)"`, not the raw provider ID. Drift (Milestone 5) compares stored state against live API reads, where references arrive as `provider.Ref` values — so drift must normalize before comparing, and should match live objects to state entries **by provider ID**, never by config name. Matching by name would be fragile: adding a resource whose slug collides with an existing one can shift the numeric suffixes.
 
 ## Milestone Sequence
@@ -100,7 +108,8 @@ Phase 0 — Foundation, Milestones 1, 2 and 3 complete.
 - Batch upsert (`POST /v2/catalog/batch-upsert`) handles up to 10,000 objects — prefer this over individual calls during apply
 - OAuth endpoints live at the host root (`/oauth2/authorize`, `/oauth2/token`), not under `/v2`. The token endpoint takes a JSON body and returns an RFC3339 `expires_at`, not `expires_in` seconds — which is why Mise does its own token exchange instead of using `oauth2.Config.Exchange`.
 - OAuth errors come back in two shapes: `{"error","error_description"}` for grant failures and `{"type","message"}` for rejected applications.
-- Every catalog mutation requires an `idempotency_key`
+- Every catalog mutation requires an `idempotency_key`. Mise derives it deterministically from the operations in the batch (action, name, provider ID, location set, properties), so a retry after a network timeout replays the same key and Square returns the original result instead of creating duplicates.
+- New objects in a batch-upsert are sent with a temporary `#name` ID; Square returns the real ID in `id_mappings`. That is also how objects within one batch reference each other.
 - Catalog objects have a `version` field for optimistic concurrency — store it in state, pass it on updates. It arrives as a JSON number; Mise stores it as a string, since other platforms use opaque string etags.
 - **Square's catalog is account-wide, not location-scoped.** One tax object carries the list of locations it applies at (`present_at_all_locations` minus `absent_at_location_ids`, or an explicit `present_at_location_ids`). The adapter lists each catalog type once per provider instance and filters per location in memory — otherwise a 15-location fetch would download the whole catalog 15 times. Commands build a fresh provider, so the cache never outlives one run.
 - `GET /v2/catalog/list` is cursor-paginated. Mise detects a repeating cursor on its second sighting rather than exhausting a page budget.

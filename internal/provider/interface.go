@@ -96,6 +96,73 @@ type Resource struct {
 	Name       string                 `json:"name"`        // User-defined name from config file
 	ProviderID string                 `json:"provider_id"` // Provider-assigned ID (from API)
 	Properties map[string]interface{} `json:"properties"`  // Resource-specific properties
-	LocationID string                 `json:"location_id"` // Which location this resource belongs to
-	Version    string                 `json:"version"`     // Provider version token (for optimistic concurrency)
+	// LocationID is the location this resource was read at. It is a
+	// read-side field: ReadAll fills it in so the engine knows where a
+	// resource was seen.
+	LocationID string `json:"location_id"`
+
+	// LocationIDs is the complete set of locations the resource should
+	// apply at. It is the write-side counterpart of LocationID: Square
+	// creates one catalog object carrying its own location list, not one
+	// object per location, so Create and Update need the whole set.
+	LocationIDs []string `json:"location_ids,omitempty"`
+
+	Version string `json:"version"` // Provider version token (for optimistic concurrency)
+}
+
+// BatchApplier is an optional capability. An adapter implements it when
+// the platform can write many resources in one API call — Square's
+// catalog batch-upsert takes up to 10,000 objects, so applying a menu
+// change across a chain is one request rather than hundreds.
+//
+// The engine uses this when the adapter provides it and falls back to
+// Create and Update otherwise, so a simpler adapter stays correct
+// without implementing it.
+type BatchApplier interface {
+	// ApplyBatch writes a set of resources. Every operation in one batch
+	// is independent: the engine only groups resources whose
+	// dependencies are already satisfied.
+	//
+	// It returns one outcome per operation, in the same order. A batch
+	// that partially succeeds reports per-operation errors rather than
+	// failing wholesale, so apply can record what did land.
+	ApplyBatch(ctx context.Context, ops []WriteOperation) ([]WriteOutcome, error)
+}
+
+// WriteAction is what a WriteOperation does.
+type WriteAction string
+
+const (
+	WriteCreate WriteAction = "create"
+	WriteUpdate WriteAction = "update"
+)
+
+// WriteOperation is one resource write.
+type WriteOperation struct {
+	Action WriteAction
+
+	// Name is the config name ("type.name"), used for idempotency keys
+	// and for naming the resource in errors.
+	Name string
+
+	// Resource carries the desired properties, the location set, the
+	// provider ID (empty on create), and the version token to pass back
+	// for optimistic concurrency on update.
+	Resource *Resource
+}
+
+// WriteOutcome is the result of one WriteOperation.
+type WriteOutcome struct {
+	Name string
+
+	// ProviderID is the resource's ID after the write. On a create this
+	// is the newly assigned one.
+	ProviderID string
+
+	// Version is the new concurrency token, when the platform returns one.
+	Version string
+
+	// Err is non-nil when this particular operation failed, even if
+	// others in the same batch succeeded.
+	Err error
 }

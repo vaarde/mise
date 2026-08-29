@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/vaarde/mise/internal/version"
 )
 
 // rootCmd is the base command when called without any subcommands.
@@ -17,6 +19,9 @@ It lets multi-location restaurant operators define, version-control,
 and deploy POS configuration (menus, tax rates, service charges,
 discounts) as declarative YAML — with plan/apply workflows, drift
 detection, and rollback via git.`,
+
+	// Cobra renders this for --version and for `mise -v`-style checks.
+	Version: version.Current().String(),
 
 	// A failed API call or a bad token is not a usage mistake — dumping
 	// the flag list on top of the error buries it. Cobra still prints
@@ -36,6 +41,10 @@ var (
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "mise.yaml", "path to configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose output")
+
+	// -v is taken by --verbose, so the version flag is long-form only.
+	rootCmd.Flags().Bool("version", false, "print the Mise version")
+	rootCmd.SetVersionTemplate("{{.Version}}\n")
 }
 
 // Execute runs the root command. Called from main.go.

@@ -35,6 +35,20 @@ var fakeState struct {
 	resourceTypes []string
 	resources     map[string][]*provider.Resource
 	readErr       error
+
+	// Write side: what apply asked for, and an optional failure.
+	written  []writeRecord
+	writeErr error
+}
+
+// writeRecord is one create or update the fake adapter received.
+type writeRecord struct {
+	Action      string
+	Type        string
+	Name        string
+	ProviderID  string
+	Properties  map[string]interface{}
+	LocationIDs []string
 }
 
 type fakeProvider struct{}
@@ -72,12 +86,37 @@ func (f *fakeProvider) ReadAll(_ context.Context, resourceType, locationID strin
 	return fakeState.resources[resourceType+"@"+locationID], nil
 }
 
-func (f *fakeProvider) Create(context.Context, string, *provider.Resource, string) (string, error) {
-	return "", fmt.Errorf("not implemented")
+func (f *fakeProvider) Create(_ context.Context, resourceType string, desired *provider.Resource, _ string) (string, error) {
+	if fakeState.writeErr != nil {
+		return "", fakeState.writeErr
+	}
+
+	id := "NEW_" + desired.Name
+	fakeState.written = append(fakeState.written, writeRecord{
+		Action:      "create",
+		Type:        resourceType,
+		Name:        desired.Name,
+		ProviderID:  id,
+		Properties:  desired.Properties,
+		LocationIDs: desired.LocationIDs,
+	})
+	return id, nil
 }
 
-func (f *fakeProvider) Update(context.Context, string, string, *provider.Resource, string) error {
-	return fmt.Errorf("not implemented")
+func (f *fakeProvider) Update(_ context.Context, resourceType string, id string, desired *provider.Resource, _ string) error {
+	if fakeState.writeErr != nil {
+		return fakeState.writeErr
+	}
+
+	fakeState.written = append(fakeState.written, writeRecord{
+		Action:      "update",
+		Type:        resourceType,
+		Name:        desired.Name,
+		ProviderID:  id,
+		Properties:  desired.Properties,
+		LocationIDs: desired.LocationIDs,
+	})
+	return nil
 }
 
 func (f *fakeProvider) Delete(context.Context, string, string, string) error {
@@ -120,6 +159,8 @@ func resetFakeState(t *testing.T, locations []provider.Location) {
 	fakeState.resourceTypes = nil
 	fakeState.resources = map[string][]*provider.Resource{}
 	fakeState.readErr = nil
+	fakeState.written = nil
+	fakeState.writeErr = nil
 
 	t.Cleanup(func() {
 		fakeState.locations = nil
@@ -128,6 +169,8 @@ func resetFakeState(t *testing.T, locations []provider.Location) {
 		fakeState.resourceTypes = nil
 		fakeState.resources = nil
 		fakeState.readErr = nil
+		fakeState.written = nil
+		fakeState.writeErr = nil
 	})
 }
 

@@ -8,7 +8,7 @@ Mise is a configuration-as-code tool for restaurant POS platforms. It lets multi
 
 🚧 **Phase 0 — Foundation.** Building the core engine and Square POS adapter.
 
-`mise init`, `mise fetch`, and `mise plan` work against Square (sandbox and production). `apply` and `drift` are still stubs.
+`mise init`, `mise fetch`, `mise plan`, and `mise apply` work against Square (sandbox and production). `drift` is still a stub.
 
 ## How It Works
 
@@ -41,6 +41,13 @@ mise drift
 ```bash
 git clone https://github.com/vaarde/mise.git
 cd mise
+make install     # puts `mise` on your PATH via GOPATH/bin
+mise version
+```
+
+Or build into the repo without installing:
+
+```bash
 make build
 ./bin/mise --help
 ```
@@ -174,6 +181,48 @@ from three locations to forty is visible before you approve it.
 
 Flags: `--target <name>` for one resource, `--location <name-or-id>` for one
 location, and `--out <file>` to save the plan for a later `mise apply --plan`.
+
+### Push the change
+
+```bash
+mise apply
+```
+
+Apply shows the same plan, asks for confirmation, then writes the changes:
+
+```
+Do you want to apply these changes? [y/N]: y
+
+Applying changes...
+
+  + square_catalog_tax.summer_promo_tax
+  ~ square_catalog_tax.ga_state_sales_tax
+
+Apply complete. 1 added, 1 changed, 0 destroyed.
+```
+
+Resources are written in dependency order — a tax exists before the menu item
+that charges it — and independent resources go up in a single batch, so a menu
+change across forty locations is one API call rather than hundreds.
+
+If part of an apply fails, the resources that succeeded are still recorded in
+state and the failures are named individually. Re-running only attempts what is
+left; the idempotency keys make that safe.
+
+Flags: `--auto-approve` for CI, `--plan <file>` to apply a saved plan,
+`--target <name>` for one resource, `--parallelism <n>` to limit concurrency.
+
+Mise never deletes POS resources. A resource removed from your config files is
+left alone on the platform.
+
+### Roll back
+
+Configuration is YAML in git, so rollback is a git operation:
+
+```bash
+git revert HEAD
+mise apply
+```
 
 ## Project Structure
 
