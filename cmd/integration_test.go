@@ -200,7 +200,7 @@ func TestIntegrationApplyRoundTrip(t *testing.T) {
 	out, err := runPlanInWorkspace(t, dir, "", "", "")
 	require.NoError(t, err, "plan failed:\n%s", out)
 	assert.Contains(t, out, resourceName)
-	assert.Contains(t, out, "1 to create")
+	assert.Contains(t, out, "1 to add")
 
 	// Apply it for real.
 	out, err = runApplyInWorkspace(t, dir, true, "", "")
