@@ -19,32 +19,13 @@
 
 ## Checklist
 
-- [ ] **1. Add machine-readable Go execution and verification surfaces**
-  Spec ref: `spec.md > Machine-Readable Mise CLI Contract` and `spec.md > Data Flow > E. Verification/convergence`
-  What to build: Add `mise apply --json` for structured apply results; add a deterministic read-only verification command such as `mise verify --plan <plan.json> --jsonl` that re-reads affected Square state and emits progress/final convergence events; add only the minimum extra location/estate JSON surface required by the Python runtime. Preserve existing human CLI output by default.
-  Acceptance: Agent-facing commands never require parsing colored/human prose; apply JSON distinguishes created/updated/failed and partial outcomes; verification reports real progress and final converged/non-converged results; existing Go behavior and tests remain intact.
-  Verify: Run `go test ./...`; run plan/apply/verify against Square sandbox or controlled integration fixtures; inspect JSON/JSONL with `jq`; confirm ordinary non-JSON CLI output still works.
+- [x] **1. Add machine-readable Go execution and verification surfaces**
+- [x] **2. Build the safe Python Mise subprocess boundary and typed contracts**
+- [x] **3. Implement typed change rendering and the Strands agent/tool layer**
+- [x] **4. Implement immutable plan hashing, approval binding, desired-state revisions and overrides**
 
-- [ ] **2. Build the safe Python Mise subprocess boundary and typed contracts**
-  Spec ref: `spec.md > File Structure > agent/mise_cli` and `spec.md > Components And Responsibilities > Mise CLI runner`
-  What to build: Create the Python package, Pydantic/dataclass contracts for estate/plan/apply/verify/drift results, and an allow-listed subprocess runner using a fixed Mise executable path, explicit arguments, `shell=False`, bounded timeouts, separate stdout/stderr capture, working-directory isolation, and exit-code mapping including drift exit code 2.
-  Acceptance: Python can invoke only approved Mise operations; JSON/JSONL is parsed into typed objects; malformed output, timeouts, non-zero errors, drift-detected exit code, and outcome-uncertain apply errors are represented explicitly; no generic shell capability exists.
-  Verify: Run Python unit tests with fake Mise executable/fixtures, then locally call the real compiled Mise binary for plan/drift/verify parsing.
-
-- [ ] **3. Implement typed change rendering and the Strands agent/tool layer**
-  Spec ref: `spec.md > AI Usage`, `spec.md > Components And Responsibilities > Strands Operations Agent`, and `spec.md > Config renderer`
-  What to build: Define typed change-intent models for targets, changes, exceptions, timing and clarification; implement trusted config rendering into Mise YAML; expose narrow Strands tools for estate inspection, location resolution, proposing changes, generating/inspecting plans, drift checks and verification. Do not expose shell, raw filesystem editing, direct Square APIs, or write authorization to the model.
-  Acceptance: A natural-language multi-location request can resolve named branches/geography/groups and explicit exceptions; material ambiguity causes a clarification question; the agent produces a plain-English interpretation plus structured draft config; trusted code—not the model—serializes config; the agent can generate a real saved Mise plan.
-  Verify: Run focused agent/tool tests for clear, ambiguous and unknown-target requests; execute one realistic Iowa-style rollout request against the sandbox workspace and inspect the generated config + plan.
-
-- [ ] **4. Implement immutable plan hashing, approval binding, desired-state revisions and overrides**
-  Spec ref: `spec.md > Data Model And Persistence > Desired-state revision`, `Plan metadata`, `Override metadata`, and `spec.md > Data Flow > C. Deterministic plan and approval`
-  What to build: Persist saved plan bytes, compute SHA-256, store plan metadata, reject stale/mutated plans after approval, and create immutable desired-state revisions only after approved desired-state changes/overrides. Generate descriptive revision titles such as `Revision 12 — Iowa Fall Menu & Tax Rollout`, while scheduled checks create observed snapshots rather than revisions. Add override metadata with explicit reasons.
-  Acceptance: Approval is bound to exact plan bytes; changing draft config supersedes the old plan; an approval cannot be replayed against a different hash; desired-state revisions are immutable and descriptively named; observed snapshots never become policy automatically; overrides require approval and are auditable.
-  Verify: Unit-test hash mismatch refusal, stale-plan supersession, revision immutability, title generation fallback, and override creation; manually inspect stored metadata/artifacts for one approved demo plan.
-
-### CHECKPOINT 1 — Boundary works
-Stop and review: the existing Go engine is still healthy, Python can safely invoke it, Strands can generate a genuine deterministic plan, and exact-plan approval semantics are testable before building cloud/UI plumbing.
+### CHECKPOINT 1 — Boundary works ✅
+Verified on 2026-09-02 with Go/Python tests on Windows and Ubuntu plus a real Square sandbox plan → apply → verify → clean reconciliation flow.
 
 - [ ] **5. Add durable S3 workspace storage, DynamoDB metadata and organization write locking**
   Spec ref: `spec.md > Durable storage`, `spec.md > Data Model And Persistence`, and `spec.md > Organization write lock`
