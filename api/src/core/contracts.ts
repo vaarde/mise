@@ -98,6 +98,37 @@ export interface ApplyDispatcher {
   enqueue(job: ApplyJob): Promise<void>;
 }
 
+export interface ApplyMachineResult {
+  status:
+    | "success"
+    | "partial"
+    | "failed"
+    | "outcome_uncertain"
+    | "no_changes"
+    | "cancelled";
+  created: string[];
+  updated: string[];
+  failed: Array<Record<string, unknown>>;
+}
+
+export interface VerifyMachineEvent {
+  type: "verify_progress" | "verify_complete";
+  verified: number;
+  total: number;
+  converged?: number;
+  non_converged?: number;
+  location?: Record<string, unknown> | null;
+}
+
+export interface ApplyRuntimeResult {
+  apply: ApplyMachineResult;
+  verify_events?: VerifyMachineEvent[];
+}
+
+export interface ApplyRuntime {
+  runApprovedPlan(job: ApplyJob): Promise<ApplyRuntimeResult>;
+}
+
 export interface ArtifactStore {
   getBytes(key: string): Promise<Uint8Array>;
 }
@@ -105,7 +136,12 @@ export interface ArtifactStore {
 export interface MetadataStore {
   get<T>(organizationId: string, entityType: string, entityId: string): Promise<T | null>;
   list<T>(organizationId: string, entityType: string): Promise<T[]>;
-  put(entityType: string, entityId: string, organizationId: string, value: Record<string, unknown>): Promise<void>;
+  put(
+    entityType: string,
+    entityId: string,
+    organizationId: string,
+    value: Record<string, unknown>,
+  ): Promise<void>;
   update<T>(
     organizationId: string,
     entityType: string,
