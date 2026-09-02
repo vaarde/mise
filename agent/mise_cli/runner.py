@@ -12,7 +12,16 @@ from .errors import MiseCommandError, MiseProtocolError, MiseTimeout
 
 
 class MiseRunner:
-    """Allow-listed subprocess adapter for the Mise CLI."""
+    """Allow-listed subprocess adapter for the Mise CLI.
+
+    ``executable_args`` are a fixed, trusted prefix inserted immediately
+    after the executable. Production leaves this empty and executes the
+    compiled Mise binary directly. Tests use it to run a fake Mise Python
+    script through the current interpreter on every operating system.
+
+    Per-call command arguments remain allow-listed by the public methods;
+    there is still no shell or generic command execution surface.
+    """
 
     def __init__(
         self,
@@ -21,8 +30,10 @@ class MiseRunner:
         *,
         timeout_seconds: float = 60.0,
         env: dict[str, str] | None = None,
+        executable_args: Iterable[str | os.PathLike[str]] | None = None,
     ) -> None:
         self.executable = Path(executable).resolve()
+        self.executable_args = tuple(str(arg) for arg in (executable_args or ()))
         self.workspace = Path(workspace).resolve()
         self.timeout_seconds = timeout_seconds
         self.env = dict(env or {})
@@ -121,7 +132,11 @@ class MiseRunner:
         *,
         accepted_codes: set[int] | None,
     ) -> subprocess.CompletedProcess[str]:
-        argv = [str(self.executable), *[str(arg) for arg in args]]
+        argv = [
+            str(self.executable),
+            *self.executable_args,
+            *[str(arg) for arg in args],
+        ]
         env = os.environ.copy()
         env.update(self.env)
         try:
