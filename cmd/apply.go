@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/vaarde/mise/internal/config"
 	"github.com/vaarde/mise/internal/engine"
 	"github.com/vaarde/mise/internal/state"
 	"github.com/vaarde/mise/pkg/output"
@@ -73,7 +75,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	plan, err := resolveApplyPlan(ctx, out)
+	plan, err := resolveApplyPlan(ctx, out, ws)
 	if err != nil {
 		return err
 	}
@@ -99,10 +101,30 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// The identity is checked before the plan is computed too, but a
+	// saved plan skips that path — and this is the last point before
+	// anything is written.
+	if err := ws.CheckStateIdentity(ctx, st); err != nil {
+		return err
+	}
+
+	// State records which account it describes. Stamping it here means a
+	// workspace built by an older Mise gains the protection on its first
+	// apply rather than waiting for the next fetch.
+	identity, err := ws.Identity(ctx)
+	if err != nil {
+		return err
+	}
+	st.SetIdentity(identity)
+
 	fmt.Fprintf(out, "\nApplying changes...\n")
 
 	result, applyErr := engine.Apply(ctx, ws.Provider, plan, st, engine.ApplyOptions{
 		Parallelism: applyParallelism,
+
+		// Each wave is written to disk as it completes. A crash then
+		// costs the record of one wave rather than the whole run.
+		Checkpoint: func(s *state.State) error { return s.Save(ws.Dir) },
 	})
 
 	// State is saved even when the apply failed part-way: the resources
@@ -124,17 +146,54 @@ func runApply(cmd *cobra.Command, args []string) error {
 }
 
 // resolveApplyPlan either reads a saved plan or computes a fresh one.
-func resolveApplyPlan(ctx context.Context, out io.Writer) (*engine.PlanResult, error) {
+func resolveApplyPlan(ctx context.Context, out io.Writer, ws *workspace) (*engine.PlanResult, error) {
 	if applyPlanFile != "" {
 		fmt.Fprintf(out, "Applying saved plan %s\n", applyPlanFile)
-		return LoadPlan(applyPlanFile)
+		return loadVerifiedPlan(ctx, ws, applyPlanFile)
 	}
 
-	return computePlan(ctx, out, planOptions{
+	plan, _, err := computePlan(ctx, ws, planOptions{
 		target:      applyTarget,
 		location:    applyLocation,
 		parallelism: applyParallelism,
 	})
+	return plan, err
+}
+
+// loadVerifiedPlan reads a saved plan and refuses it unless it was built
+// for this workspace, against this state, from this configuration.
+//
+// A plan file is a list of provider IDs and version tokens. Executed
+// against the account it was made for, it does what it previewed;
+// executed anywhere else, it is a set of instructions about objects that
+// do not exist there, and apply would dutifully re-create all of them.
+func loadVerifiedPlan(ctx context.Context, ws *workspace, path string) (*engine.PlanResult, error) {
+	saved, err := LoadPlan(path)
+	if err != nil {
+		return nil, err
+	}
+
+	st, err := state.Load(ws.Dir)
+	if err != nil {
+		return nil, err
+	}
+
+	// A config that no longer parses is reported as a config error
+	// rather than silently skipping the digest comparison.
+	declared, err := config.LoadResources(ws.Dir, filepath.Base(configFile))
+	if err != nil {
+		return nil, err
+	}
+	digest, err := config.Digest(declared)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := saved.Verify(ctx, ws, st, digest); err != nil {
+		return nil, err
+	}
+
+	return saved.Plan, nil
 }
 
 // confirmApply asks before making changes. The safe answer is the

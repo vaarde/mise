@@ -34,12 +34,18 @@ func TestOtherTypesKeepTheirExplicitLocationList(t *testing.T) {
 	}
 }
 
-func TestNoLocationsMeansAccountWide(t *testing.T) {
-	object := map[string]interface{}{}
-	applyLocationScope(object, TypeTax, nil)
+func TestEmptyScopeIsRefusedRatherThanWidened(t *testing.T) {
+	// "Everywhere" and "nowhere" are the same value to Square, so an
+	// empty list has to be caught before it reaches the request. A group
+	// that matched no locations must never turn into an account-wide
+	// write.
+	_, _, err := catalogObjectFor(writeOp(provider.WriteCreate, TypeTax, "ga_tax",
+		map[string]interface{}{"percentage": "4.5"}, nil))
 
-	assert.Equal(t, true, object["present_at_all_locations"])
-	assert.NotContains(t, object, "present_at_location_ids")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no locations to write to")
+	assert.Contains(t, err.Error(), "${group.all}",
+		"the error should name the way to actually mean every location")
 }
 
 func TestVariationsInheritTheItemsLocationScope(t *testing.T) {

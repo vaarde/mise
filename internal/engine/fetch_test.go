@@ -92,15 +92,15 @@ func (s *stubProvider) Read(context.Context, string, string, string) (*provider.
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (s *stubProvider) Create(context.Context, string, *provider.Resource, string) (string, error) {
+func (s *stubProvider) Create(context.Context, string, *provider.Resource) (string, error) {
 	return "", fmt.Errorf("not implemented")
 }
 
-func (s *stubProvider) Update(context.Context, string, string, *provider.Resource, string) error {
+func (s *stubProvider) Update(context.Context, string, string, *provider.Resource) error {
 	return fmt.Errorf("not implemented")
 }
 
-func (s *stubProvider) Delete(context.Context, string, string, string) error {
+func (s *stubProvider) Delete(context.Context, string, string) error {
 	return fmt.Errorf("not implemented")
 }
 
