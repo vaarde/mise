@@ -11,14 +11,15 @@ import (
 // Point a workspace at a second merchant and every ID recorded in state
 // misses on the new account, so plan reads each resource as "deleted
 // outside Mise" and proposes to create it — duplicating the entire
-// configuration into the wrong place, with no error anywhere along the
+// configuration into the wrong account, with no error anywhere along the
 // way. Recording the account and checking it is what makes that loud.
 type Identity struct {
 	// Provider is the platform name ("square").
 	Provider string `json:"provider,omitempty"`
 
 	// Environment is "production" or "sandbox". An empty value means
-	// production, matching mise.yaml's default.
+	// production, matching mise.yaml's default once an identity has been
+	// recorded. Legacy state is handled separately by IsZero.
 	Environment string `json:"environment,omitempty"`
 
 	// AccountID identifies the account within the platform — Square's
@@ -44,9 +45,8 @@ func (i Identity) String() string {
 	return strings.Join(parts, " ")
 }
 
-// environment normalizes the empty value to production, so a workspace
-// that omits the field does not read as a different environment from one
-// that spells it out.
+// environment normalizes the empty value to production for identities that
+// actually carry identity metadata. This matches mise.yaml's default.
 func (i Identity) environment() string {
 	if i.Environment == "" {
 		return "production"
@@ -54,20 +54,24 @@ func (i Identity) environment() string {
 	return i.Environment
 }
 
-// IsZero reports whether an identity records nothing at all. State
-// written by an older Mise has no identity, so there is nothing to
-// check against and the run is allowed to proceed.
+// IsZero reports whether state carries no account/environment identity yet.
+//
+// Older Mise state files already stored Provider (for example "square"), but
+// they predate Environment and AccountID. Treating provider-only state as a
+// recorded identity would incorrectly reinterpret every legacy sandbox
+// workspace as production because an empty environment normally defaults to
+// production. The next fetch or apply stamps the missing identity fields.
 func (i Identity) IsZero() bool {
-	return i.Provider == "" && i.Environment == "" && i.AccountID == ""
+	return i.Environment == "" && i.AccountID == ""
 }
 
 // Check compares the identity recorded in state against the account the
 // current workspace actually reaches, and explains any mismatch.
 //
 // Unknown fields never cause a mismatch: an adapter without
-// provider.AccountIdentifier leaves AccountID empty on both sides, and
-// state from an older Mise records nothing. The check tightens as more
-// is known rather than refusing to run on incomplete information.
+// provider.AccountIdentifier leaves AccountID empty, and legacy state records
+// neither environment nor account. The check tightens as more is known rather
+// than refusing to run on incomplete information.
 func (i Identity) Check(current Identity) error {
 	if i.IsZero() {
 		return nil
