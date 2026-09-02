@@ -27,11 +27,8 @@
 ### CHECKPOINT 1 — Boundary works ✅
 Verified on 2026-09-02 with Go/Python tests on Windows and Ubuntu plus a real Square sandbox plan → apply → verify → clean reconciliation flow.
 
-- [ ] **5. Add durable S3 workspace storage, DynamoDB metadata and organization write locking**
-  Spec ref: `spec.md > Durable storage`, `spec.md > Data Model And Persistence`, and `spec.md > Organization write lock`
-  What to build: Implement S3 hydrate/sync for each organization workspace plus plan, draft-config, snapshot and revision artifacts; implement DynamoDB repositories for plans, approvals, rollouts, overrides, snapshots and revisions; implement a conditional-write lease so only one mutating rollout can run per organization while read-only work remains concurrent.
-  Acceptance: AgentCore/local runtime can reconstruct a workspace from durable storage; trusted mutations sync back atomically enough for the demo; stale leases expire; a second simultaneous mutation is refused; read-only actions are not blocked unnecessarily.
-  Verify: Integration-test hydrate→mutate→sync→rehydrate; test lock acquisition/contention/expiry; inspect expected S3 keys and DynamoDB records.
+- [x] **5. Add durable S3 workspace storage, DynamoDB metadata and organization write locking**
+  Implemented S3 workspace hydrate/sync with credential/lock exclusion and a completion manifest; S3 plan/draft/snapshot/revision artifact layout; typed DynamoDB plan/approval/rollout/override/snapshot/revision metadata; and an expiring conditional-write organization mutation lease. Verified with hydrate→sync→rehydrate, metadata round-trip, stale deletion, lock contention/takeover/renewal/release tests on Ubuntu and Windows CI.
 
 - [ ] **6. Build the thin browser-facing API and SSE rollout stream**
   Spec ref: `spec.md > Thin API layer`, `spec.md > API layer`, and `spec.md > Data Flow > D/E`
