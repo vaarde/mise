@@ -79,3 +79,42 @@
 - Scope deepening rounds: 1 completed.
 - Scope document written to `docs/hackathon-build/scope.md`.
 - Next step: PRD.
+
+## 2026-09-02 — PRD
+
+### Product behavior decisions
+- First-run experience starts with POS-estate connection and explicitly frames discovery as read-only observed state.
+- After import, Mise should show estate size/patterns and clearly state that no desired baseline exists yet.
+- Natural-language rollout requests are interpreted back to the operator in plain English; the agent stops for clarification before planning when any material detail is ambiguous.
+- Approved plans immediately establish desired state for the affected scope, even if some targets are still non-converged.
+- Non-converged targets remain governed by the approved desired state and receive remediation actions.
+- If an operator decides a failed/non-converged location should legitimately remain different, that difference must become an explicit approved override rather than being silently dismissed.
+- Overrides should be auditable and include a short reason/category.
+- Future drift at an overridden location is evaluated against the override, not against the global default.
+- Accepting a drift as a new exception is itself a desired-state change and must go through plan/approval.
+- Console navigation is intentionally small: Overview, Changes, Drift, Locations.
+- Rollouts need visible live progress counts rather than a generic “Applying…” spinner.
+- Example rollout cue: `2/200 → 50/200 → 120/200 → 200/200`, followed by final verification and success/failure breakdown.
+- Final rollout results should lead directly into remediation actions for failed/non-converged targets.
+- The live demo should prove the full product lifecycle from discovery through rollout, convergence, drift, and remediation/override.
+
+### Acceptance/governance model
+- Observed state, desired state, and convergence are distinct concepts in the product.
+- Every write requires explicit approval in hackathon v1.
+- Every approval binds to the exact saved deterministic plan shown to the operator.
+- Every plan gets a compact blast-radius summary, even for one-location changes.
+- Verification after apply determines convergence; API success alone is not enough.
+- Partial success is a normal first-class state rather than a generic failure.
+
+### Active shaping moments
+- Dan explicitly chose approved desired state + non-convergence over delaying desired state until every target succeeds.
+- Dan required explicit operator overrides for intentional local differences after failures.
+- Dan chose explanatory drift messages that identify expected state, actual state, affected location, and why it may matter.
+- Dan rejected a generic applying spinner and required visible rollout progress cues that communicate movement across the target estate.
+- Dan chose to lock the current PRD scope and dedicate more time if needed rather than cut the defined product experience further.
+
+### Deepening / interview state
+- PRD mandatory interview: completed across 3 rounds.
+- PRD deepening rounds: 0 additional rounds; participant chose to lock the PRD after the core behavior rounds.
+- PRD written to `docs/hackathon-build/prd.md`.
+- Next step: Technical Spec (`$build-spec`).
