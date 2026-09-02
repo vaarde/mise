@@ -32,12 +32,12 @@ func TestIdentityRejectsADifferentEnvironment(t *testing.T) {
 	assert.Contains(t, err.Error(), "production")
 }
 
-func TestIdentityTreatsEmptyEnvironmentAsProduction(t *testing.T) {
-	// mise.yaml may omit the environment, and that means production. A
-	// workspace that spells it out must not read as a different account
-	// from one that leaves it to the default.
-	recorded := Identity{Provider: "square", Environment: ""}
-	current := Identity{Provider: "square", Environment: "production"}
+func TestIdentityTreatsEmptyEnvironmentAsProductionWhenIdentityIsOtherwiseKnown(t *testing.T) {
+	// An identity can know the account while relying on the default
+	// production environment. That remains equivalent to spelling production
+	// out explicitly.
+	recorded := Identity{Provider: "square", Environment: "", AccountID: "MERCHANT_A"}
+	current := Identity{Provider: "square", Environment: "production", AccountID: "MERCHANT_A"}
 
 	assert.NoError(t, recorded.Check(current))
 	assert.NoError(t, current.Check(recorded))
@@ -54,10 +54,21 @@ func TestIdentitySkipsWhatItCannotKnow(t *testing.T) {
 }
 
 func TestZeroIdentityChecksNothing(t *testing.T) {
-	// State written by an older Mise records no identity at all.
 	var recorded Identity
 	assert.True(t, recorded.IsZero())
-	assert.NoError(t, recorded.Check(Identity{Provider: "square", AccountID: "MERCHANT_A"}))
+	assert.NoError(t, recorded.Check(Identity{Provider: "square", Environment: "sandbox", AccountID: "MERCHANT_A"}))
+}
+
+func TestLegacyProviderOnlyStateChecksNothing(t *testing.T) {
+	// State written before account/environment identity support still stored
+	// the provider name. It must not be reinterpreted as a production identity
+	// when opened with sandbox credentials.
+	recorded := Identity{Provider: "square"}
+	current := Identity{Provider: "square", Environment: "sandbox", AccountID: "MERCHANT_A"}
+
+	assert.True(t, recorded.IsZero())
+	assert.NoError(t, recorded.Check(current))
+	assert.Equal(t, "an unrecorded account", recorded.String())
 }
 
 func TestIdentityAcceptsTheSameAccount(t *testing.T) {
