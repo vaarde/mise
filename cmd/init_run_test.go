@@ -31,6 +31,12 @@ var fakeState struct {
 	listErr               error
 	configureErr          error
 
+	// accountID is what the fake reports as the account its credentials
+	// reach. Empty means "this adapter cannot name an account", which is
+	// how an adapter without provider.AccountIdentifier behaves.
+	accountID    string
+	accountIDErr error
+
 	// resourceTypes and resources drive ReadAll, keyed "type@location".
 	resourceTypes []string
 	resources     map[string][]*provider.Resource
@@ -86,7 +92,7 @@ func (f *fakeProvider) ReadAll(_ context.Context, resourceType, locationID strin
 	return fakeState.resources[resourceType+"@"+locationID], nil
 }
 
-func (f *fakeProvider) Create(_ context.Context, resourceType string, desired *provider.Resource, _ string) (string, error) {
+func (f *fakeProvider) Create(_ context.Context, resourceType string, desired *provider.Resource) (string, error) {
 	if fakeState.writeErr != nil {
 		return "", fakeState.writeErr
 	}
@@ -103,7 +109,7 @@ func (f *fakeProvider) Create(_ context.Context, resourceType string, desired *p
 	return id, nil
 }
 
-func (f *fakeProvider) Update(_ context.Context, resourceType string, id string, desired *provider.Resource, _ string) error {
+func (f *fakeProvider) Update(_ context.Context, resourceType string, id string, desired *provider.Resource) error {
 	if fakeState.writeErr != nil {
 		return fakeState.writeErr
 	}
@@ -119,8 +125,14 @@ func (f *fakeProvider) Update(_ context.Context, resourceType string, id string,
 	return nil
 }
 
-func (f *fakeProvider) Delete(context.Context, string, string, string) error {
+func (f *fakeProvider) Delete(context.Context, string, string) error {
 	return fmt.Errorf("not implemented")
+}
+
+// AccountID implements provider.AccountIdentifier, so tests can exercise
+// a workspace being pointed at a different POS account.
+func (f *fakeProvider) AccountID(context.Context) (string, error) {
+	return fakeState.accountID, fakeState.accountIDErr
 }
 
 func init() {
@@ -161,6 +173,8 @@ func resetFakeState(t *testing.T, locations []provider.Location) {
 	fakeState.readErr = nil
 	fakeState.written = nil
 	fakeState.writeErr = nil
+	fakeState.accountID = "ACCOUNT_A"
+	fakeState.accountIDErr = nil
 
 	t.Cleanup(func() {
 		fakeState.locations = nil

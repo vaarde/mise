@@ -291,8 +291,13 @@ func TestIntegrationDriftDetectsAnOutOfBandChange(t *testing.T) {
 	live, err := p.Read(context.Background(), square.TypeTax, entry.ProviderID, "")
 	require.NoError(t, err)
 
+	// The write side takes the whole location set, which Read does not
+	// fill in — it reports where a resource was seen, not where it
+	// should go. State has the scope this resource was applied with.
+	live.LocationIDs = entry.Locations
+
 	live.Properties["percentage"] = "9.99"
-	require.NoError(t, p.Update(context.Background(), square.TypeTax, entry.ProviderID, live, ""))
+	require.NoError(t, p.Update(context.Background(), square.TypeTax, entry.ProviderID, live))
 
 	out, err = runDriftInWorkspace(t, dir, "", "", false)
 
@@ -463,7 +468,7 @@ func cleanupResources(t *testing.T, token, dir string, resources ...[]string) {
 			if p == nil {
 				p = sandboxClient(t, token)
 			}
-			if err := p.Delete(context.Background(), resourceType, entry.ProviderID, ""); err != nil {
+			if err := p.Delete(context.Background(), resourceType, entry.ProviderID); err != nil {
 				t.Logf("could not clean up %s (%s): %v", name, entry.ProviderID, err)
 			}
 		}

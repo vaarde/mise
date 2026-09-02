@@ -57,15 +57,13 @@ func Acquire(workDir, operation string) (*LockHandle, error) {
 		return nil, fmt.Errorf("cannot serialize lock: %w", err)
 	}
 
-	// O_EXCL makes creation the atomic test-and-set: whoever creates the
-	// file wins, with no window between checking and writing.
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	// Taking over a stale lock is itself a race: two processes can both
+	// judge the same lock dead. Both attempts below go through O_EXCL
+	// creation, so only one of them can succeed — the loser is told to
+	// wait rather than silently writing its own lock over the winner's.
+	handle, err := createLock(path, data)
 	if err == nil {
-		defer file.Close()
-		if _, err := file.Write(data); err != nil {
-			return nil, fmt.Errorf("cannot write lock file: %w", err)
-		}
-		return &LockHandle{path: path}, nil
+		return handle, nil
 	}
 	if !os.IsExist(err) {
 		return nil, fmt.Errorf("cannot create lock file: %w", err)
@@ -80,20 +78,55 @@ func Acquire(workDir, operation string) (*LockHandle, error) {
 
 	age := time.Since(existing.AcquiredAt)
 	if age < StaleLockAge {
-		return nil, fmt.Errorf(
-			"another mise process holds the workspace lock (%s, pid %d on %s, held for %s)\n"+
-				"Wait for it to finish, or remove %s if that process is gone",
-			existing.Operation, existing.PID, existing.Host, age.Round(time.Second), path)
+		return nil, heldError(path, existing, age)
 	}
 
 	// Stale — break it and take over.
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("cannot break stale lock at %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+
+	handle, err = createLock(path, data)
+	if err == nil {
+		return handle, nil
+	}
+	if os.IsExist(err) {
+		// Another process broke the same stale lock first. Its lock is
+		// fresh, so this is an ordinary "someone else holds it".
+		if winner, readErr := readLock(path); readErr == nil {
+			return nil, heldError(path, winner, time.Since(winner.AcquiredAt))
+		}
+		return nil, fmt.Errorf("another mise process took the workspace lock at %s while it was being broken\n"+
+			"Wait for it to finish and try again", path)
+	}
+	return nil, fmt.Errorf("cannot write lock file: %w", err)
+}
+
+// createLock writes a lock file, failing if one already exists.
+//
+// O_EXCL makes creation the atomic test-and-set: whoever creates the
+// file wins, with no window between checking and writing. The returned
+// error satisfies os.IsExist when someone else holds the lock.
+func createLock(path string, data []byte) (*LockHandle, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	if _, err := file.Write(data); err != nil {
+		os.Remove(path)
 		return nil, fmt.Errorf("cannot write lock file: %w", err)
 	}
 	return &LockHandle{path: path}, nil
+}
+
+// heldError explains that another process holds the lock.
+func heldError(path string, held *Lock, age time.Duration) error {
+	return fmt.Errorf(
+		"another mise process holds the workspace lock (%s, pid %d on %s, held for %s)\n"+
+			"Wait for it to finish, or remove %s if that process is gone",
+		held.Operation, held.PID, held.Host, age.Round(time.Second), path)
 }
 
 // readLock parses an existing lock file.

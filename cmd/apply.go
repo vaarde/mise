@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/vaarde/mise/internal/config"
 	"github.com/vaarde/mise/internal/engine"
 	"github.com/vaarde/mise/internal/state"
 	"github.com/vaarde/mise/pkg/output"
@@ -32,7 +34,6 @@ recorded in state, so re-running only attempts what is left.`,
 	RunE: runApply,
 }
 
-// Flags for apply
 var (
 	applyAutoApprove bool
 	applyPlanFile    string
@@ -47,8 +48,7 @@ func init() {
 	applyCmd.Flags().StringVar(&applyPlanFile, "plan", "", "apply a previously saved plan file")
 	applyCmd.Flags().StringVar(&applyTarget, "target", "", "apply only a specific resource")
 	applyCmd.Flags().StringVar(&applyLocation, "location", "", "apply only for a specific location")
-	applyCmd.Flags().IntVar(&applyParallelism, "parallelism", engine.DefaultParallelism,
-		"max concurrent API calls")
+	applyCmd.Flags().IntVar(&applyParallelism, "parallelism", engine.DefaultParallelism, "max concurrent API calls")
 	applyCmd.Flags().BoolVar(&applyJSON, "json", false, "write the apply result as machine-readable JSON")
 	rootCmd.AddCommand(applyCmd)
 }
@@ -61,8 +61,6 @@ func runApply(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	diagnostics := out
 	if applyJSON {
-		// Keep stdout valid JSON for callers such as the Strands runtime.
-		// Human diagnostics may still go to stderr.
 		diagnostics = cmd.ErrOrStderr()
 	}
 
@@ -71,8 +69,6 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// One apply at a time: two concurrent runs would leave the state file
-	// describing neither of them.
 	lock, err := state.Acquire(ws.Dir, "apply")
 	if err != nil {
 		return err
@@ -83,14 +79,13 @@ func runApply(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	plan, err := resolveApplyPlan(ctx, diagnostics)
+	plan, err := resolveApplyPlan(ctx, diagnostics, ws)
 	if err != nil {
 		return err
 	}
 
 	if !applyJSON {
-		printer := output.NewPlanPrinter(out, plan.Locations)
-		printer.Print(plan)
+		output.NewPlanPrinter(out, plan.Locations).Print(plan)
 	}
 
 	if !plan.HasChanges() {
@@ -116,18 +111,24 @@ func runApply(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := ws.CheckStateIdentity(ctx, st); err != nil {
+		return err
+	}
+	identity, err := ws.Identity(ctx)
+	if err != nil {
+		return err
+	}
+	st.SetIdentity(identity)
 
 	if !applyJSON {
-		fmt.Fprintf(out, "\nApplying changes...\n")
+		fmt.Fprintln(out, "\nApplying changes...")
 	}
 
 	result, applyErr := engine.Apply(ctx, ws.Provider, plan, st, engine.ApplyOptions{
 		Parallelism: applyParallelism,
+		Checkpoint: func(s *state.State) error { return s.Save(ws.Dir) },
 	})
 
-	// State is saved even when the apply failed part-way: the resources
-	// that did land must be recorded, or the next plan would create them
-	// a second time.
 	if saveErr := st.Save(ws.Dir); saveErr != nil {
 		if applyErr != nil {
 			return fmt.Errorf("%w (and the state file could not be saved: %v)", applyErr, saveErr)
@@ -166,7 +167,6 @@ func printApplyJSON(out io.Writer, result *engine.ApplyResult, applyErr error, f
 	if result == nil {
 		result = &engine.ApplyResult{}
 	}
-
 	status := forcedStatus
 	if status == "" {
 		switch {
@@ -180,21 +180,12 @@ func printApplyJSON(out io.Writer, result *engine.ApplyResult, applyErr error, f
 			status = "success"
 		}
 	}
-
 	failures := make([]applyJSONFailure, 0, len(result.Failed))
 	for _, failure := range result.Failed {
-		failures = append(failures, applyJSONFailure{
-			Resource: failure.FullName,
-			Action:   failure.Action.String(),
-			Message:  failure.Message,
-		})
+		failures = append(failures, applyJSONFailure{Resource: failure.FullName, Action: failure.Action.String(), Message: failure.Message})
 	}
-
 	return json.NewEncoder(out).Encode(applyJSONEnvelope{
-		Status:  status,
-		Created: nonNilStrings(result.Created),
-		Updated: nonNilStrings(result.Updated),
-		Failed:  failures,
+		Status: status, Created: nonNilStrings(result.Created), Updated: nonNilStrings(result.Updated), Failed: failures,
 	})
 }
 
@@ -205,30 +196,44 @@ func nonNilStrings(values []string) []string {
 	return values
 }
 
-// resolveApplyPlan either reads a saved plan or computes a fresh one.
-func resolveApplyPlan(ctx context.Context, out io.Writer) (*engine.PlanResult, error) {
+func resolveApplyPlan(ctx context.Context, out io.Writer, ws *workspace) (*engine.PlanResult, error) {
 	if applyPlanFile != "" {
 		fmt.Fprintf(out, "Applying saved plan %s\n", applyPlanFile)
-		return LoadPlan(applyPlanFile)
+		return loadVerifiedPlan(ctx, ws, applyPlanFile)
 	}
-
-	return computePlan(ctx, out, planOptions{
-		target:      applyTarget,
-		location:    applyLocation,
-		parallelism: applyParallelism,
-	})
+	plan, _, err := computePlan(ctx, ws, planOptions{target: applyTarget, location: applyLocation, parallelism: applyParallelism})
+	return plan, err
 }
 
-// confirmApply asks before making changes. The safe answer is the
-// default, matching the PRD's "[y/N]".
+func loadVerifiedPlan(ctx context.Context, ws *workspace, path string) (*engine.PlanResult, error) {
+	saved, err := LoadPlan(path)
+	if err != nil {
+		return nil, err
+	}
+	st, err := state.Load(ws.Dir)
+	if err != nil {
+		return nil, err
+	}
+	declared, err := config.LoadResources(ws.Dir, filepath.Base(configFile))
+	if err != nil {
+		return nil, err
+	}
+	digest, err := config.Digest(declared)
+	if err != nil {
+		return nil, err
+	}
+	if err := saved.Verify(ctx, ws, st, digest); err != nil {
+		return nil, err
+	}
+	return saved.Plan, nil
+}
+
 func confirmApply(out io.Writer, autoApprove bool) (bool, error) {
 	if autoApprove {
 		return true, nil
 	}
-
 	prompt := newPrompter(out)
 	fmt.Fprintln(out)
-
 	approved, err := prompt.confirm("Do you want to apply these changes?", false)
 	if errors.Is(err, errNotInteractive) {
 		return false, fmt.Errorf("apply needs confirmation but there is no terminal — pass --auto-approve to run unattended")

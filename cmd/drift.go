@@ -81,6 +81,13 @@ func runDrift(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Drift compares recorded provider IDs against a live account. Run
+	// against a different account, every ID would miss and the report
+	// would claim the entire configuration had been deleted.
+	if err := ws.CheckStateIdentity(ctx, st); err != nil {
+		return err
+	}
+
 	result, err := engine.Drift(ctx, ws.Provider, st, engine.DriftOptions{
 		TargetLocation: driftLocation,
 		ResourceType:   driftType,

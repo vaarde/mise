@@ -125,3 +125,46 @@ func TestAcquireAfterRelease(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, second.Release())
 }
+
+func TestStaleLockIsOnlyBrokenOnce(t *testing.T) {
+	// Two processes can both judge the same lock dead. Taking over used
+	// to be a plain write, so both would "succeed" and two applies would
+	// run against one workspace. The takeover now goes through the same
+	// O_EXCL creation as a first acquire, so only one can win.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, StateDir), 0o700))
+
+	stale := Lock{
+		PID:        99999,
+		Host:       "gone",
+		Operation:  "apply",
+		AcquiredAt: time.Now().UTC().Add(-2 * StaleLockAge),
+	}
+	data, err := json.Marshal(stale)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(LockPath(dir), data, 0o600))
+
+	first, err := Acquire(dir, "apply")
+	require.NoError(t, err, "the first process breaks the stale lock and takes over")
+	require.NotNil(t, first)
+
+	// The lock it now holds is fresh, so the second process must wait.
+	second, err := Acquire(dir, "apply")
+	require.Error(t, err, "a second process must not also take over")
+	assert.Nil(t, second)
+	assert.Contains(t, err.Error(), "another mise process holds the workspace lock")
+
+	require.NoError(t, first.Release())
+}
+
+func TestLockIsFreeAfterRelease(t *testing.T) {
+	dir := t.TempDir()
+
+	first, err := Acquire(dir, "apply")
+	require.NoError(t, err)
+	require.NoError(t, first.Release())
+
+	second, err := Acquire(dir, "apply")
+	require.NoError(t, err, "releasing a lock frees the workspace")
+	require.NoError(t, second.Release())
+}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,10 +11,9 @@ from mise_cli.runner import MiseRunner
 
 
 def fake_mise(tmp_path: Path) -> Path:
-    executable = tmp_path / "fake-mise"
-    executable.write_text(
-        '''#!/usr/bin/env python3
-import json
+    script = tmp_path / "fake_mise.py"
+    script.write_text(
+        '''import json
 import pathlib
 import sys
 import time
@@ -53,15 +52,28 @@ raise SystemExit(3)
 ''',
         encoding="utf-8",
     )
-    executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-    return executable
+    return script
+
+
+def fake_runner(
+    script: Path,
+    workspace: Path,
+    *,
+    timeout_seconds: float = 60.0,
+) -> MiseRunner:
+    return MiseRunner(
+        sys.executable,
+        workspace,
+        executable_args=[script],
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def test_runner_parses_plan_apply_drift_and_verify(tmp_path: Path) -> None:
-    executable = fake_mise(tmp_path)
+    script = fake_mise(tmp_path)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    runner = MiseRunner(executable, workspace)
+    runner = fake_runner(script, workspace)
 
     plan = runner.plan("plans/demo.json")
     assert plan.summary.to_update == 0
@@ -82,33 +94,32 @@ def test_runner_parses_plan_apply_drift_and_verify(tmp_path: Path) -> None:
 
 
 def test_runner_rejects_paths_outside_workspace(tmp_path: Path) -> None:
-    executable = fake_mise(tmp_path)
+    script = fake_mise(tmp_path)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    runner = MiseRunner(executable, workspace)
+    runner = fake_runner(script, workspace)
 
     with pytest.raises(ValueError, match="inside Mise workspace"):
         runner.apply(tmp_path / "outside.json")
 
 
 def test_runner_rejects_malformed_verify_stream(tmp_path: Path) -> None:
-    executable = tmp_path / "bad-mise"
-    executable.write_text("#!/bin/sh\necho not-json\n", encoding="utf-8")
-    executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+    script = tmp_path / "bad_mise.py"
+    script.write_text("print('not-json')\n", encoding="utf-8")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "plan.json").write_text("{}", encoding="utf-8")
-    runner = MiseRunner(executable, workspace)
+    runner = fake_runner(script, workspace)
 
     with pytest.raises(MiseProtocolError):
         runner.verify("plan.json")
 
 
 def test_runner_maps_timeout(tmp_path: Path) -> None:
-    executable = fake_mise(tmp_path)
+    script = fake_mise(tmp_path)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    runner = MiseRunner(executable, workspace, timeout_seconds=0.01)
+    runner = fake_runner(script, workspace, timeout_seconds=0.01)
 
     with pytest.raises(MiseTimeout):
         runner._execute(["sleep"], accepted_codes={0})

@@ -25,6 +25,16 @@ type Wave []ResourceChange
 func OrderChanges(changes []ResourceChange, declaredProperties map[string]map[string]interface{}) ([]Wave, error) {
 	pending := make(map[string]ResourceChange, len(changes))
 	for _, change := range changes {
+		// The map is keyed by name, so a repeated resource would
+		// overwrite its twin and one of the two would never be applied —
+		// silently, and with the winner decided by file walk order.
+		// Config loading rejects duplicates; this catches the paths that
+		// reach the graph another way, such as an edited saved plan.
+		if _, dup := pending[change.FullName()]; dup {
+			return nil, fmt.Errorf("%s appears twice in the same plan — "+
+				"Mise identifies a resource by its type and name, so one of the two would be dropped",
+				change.FullName())
+		}
 		pending[change.FullName()] = change
 	}
 

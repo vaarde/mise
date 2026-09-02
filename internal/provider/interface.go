@@ -39,17 +39,43 @@ type Provider interface {
 	// Create creates a new resource on the POS and returns its
 	// provider-assigned ID. The engine calls this during apply
 	// for resources that exist in config but not in the live POS.
-	Create(ctx context.Context, resourceType string, desired *Resource, locationID string) (string, error)
+	//
+	// The scope to write at is desired.LocationIDs, which the engine
+	// guarantees is non-empty. There is deliberately no separate
+	// locationID argument: passing one alongside a location set left it
+	// ambiguous which of the two an adapter should honor.
+	Create(ctx context.Context, resourceType string, desired *Resource) (string, error)
 
 	// Update modifies an existing resource on the POS. The engine
 	// calls this during apply for resources whose properties have
 	// changed between the declared config and the live state.
-	Update(ctx context.Context, resourceType string, id string, desired *Resource, locationID string) error
+	//
+	// As with Create, desired.LocationIDs carries the full scope.
+	Update(ctx context.Context, resourceType string, id string, desired *Resource) error
 
 	// Delete removes a resource from the POS. Only called when
 	// the operator explicitly uses --destroy. Mise's safety-first
 	// default is to never delete resources automatically.
-	Delete(ctx context.Context, resourceType string, id string, locationID string) error
+	Delete(ctx context.Context, resourceType string, id string) error
+}
+
+// AccountIdentifier is an optional capability. An adapter implements it
+// when the platform can name the account a set of credentials reaches —
+// Square's merchant ID, for instance.
+//
+// Mise records that identity in the state file and refuses to plan or
+// apply when it no longer matches. Without it, pointing a workspace at a
+// second account is silent and destructive: every provider ID in state
+// misses on the new account, so every update is re-planned as a create
+// and the whole configuration is duplicated into the wrong place.
+//
+// An adapter that cannot name the account simply does not implement
+// this, and Mise falls back to checking the platform and environment.
+type AccountIdentifier interface {
+	// AccountID returns a stable identifier for the account the current
+	// credentials reach. It must be the same across runs for the same
+	// account and different for a different one.
+	AccountID(ctx context.Context) (string, error)
 }
 
 // ProviderConfig holds the provider block from mise.yaml.

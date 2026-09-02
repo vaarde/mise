@@ -136,7 +136,7 @@ func applyBatchResponse(
 }
 
 // Create writes a single new resource and returns its Square ID.
-func (p *SquareProvider) Create(ctx context.Context, resourceType string, desired *provider.Resource, locationID string) (string, error) {
+func (p *SquareProvider) Create(ctx context.Context, resourceType string, desired *provider.Resource) (string, error) {
 	outcome, err := p.upsertOne(ctx, provider.WriteOperation{
 		Action:   provider.WriteCreate,
 		Name:     resourceType + "." + desired.Name,
@@ -149,7 +149,7 @@ func (p *SquareProvider) Create(ctx context.Context, resourceType string, desire
 }
 
 // Update writes changes to an existing resource.
-func (p *SquareProvider) Update(ctx context.Context, resourceType string, id string, desired *provider.Resource, locationID string) error {
+func (p *SquareProvider) Update(ctx context.Context, resourceType string, id string, desired *provider.Resource) error {
 	resource := withType(desired, resourceType)
 	resource.ProviderID = id
 
@@ -195,7 +195,7 @@ func (p *SquareProvider) upsertOne(ctx context.Context, op provider.WriteOperati
 
 // Delete removes a resource. Mise only calls this when the operator
 // explicitly passes --destroy.
-func (p *SquareProvider) Delete(ctx context.Context, resourceType string, id string, locationID string) error {
+func (p *SquareProvider) Delete(ctx context.Context, resourceType string, id string) error {
 	if p.client == nil {
 		return fmt.Errorf("square provider is not configured")
 	}
@@ -254,6 +254,16 @@ func catalogObjectFor(op provider.WriteOperation) (map[string]interface{}, strin
 		}
 	}
 
+	// Square reads an object with no location list as present at every
+	// location, so an empty scope here would do the opposite of what it
+	// says. The engine rejects empty scopes before an apply starts; this
+	// catches the paths that bypass it, such as a hand-edited saved plan.
+	if len(op.Resource.LocationIDs) == 0 {
+		return nil, "", fmt.Errorf(
+			"%s: no locations to write to — Square would read that as every location. "+
+				"Name the locations, or use ${group.all} if that is what you meant", op.Name)
+	}
+
 	applyLocationScope(object, op.Resource.Type, op.Resource.LocationIDs)
 
 	data, err := typeDataFor(op.Resource.Type, op.Resource.Properties, op.Resource.LocationIDs)
@@ -277,8 +287,12 @@ var accountWideOnlyTypes = map[string]bool{
 }
 
 // applyLocationScope sets the location fields Square uses for scoping.
+//
+// It must never be reached with an empty location list: callers check
+// for that first, because "everywhere" and "nowhere" are the same value
+// to Square and only the caller knows which one was meant.
 func applyLocationScope(object map[string]interface{}, resourceType string, locationIDs []string) {
-	if len(locationIDs) == 0 || accountWideOnlyTypes[resourceType] {
+	if accountWideOnlyTypes[resourceType] {
 		object["present_at_all_locations"] = true
 		return
 	}

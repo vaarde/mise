@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -277,8 +278,8 @@ func TestApplyRejectsCircularReferences(t *testing.T) {
 	st := state.New("stub")
 
 	plan := &PlanResult{Plan: Plan{Changes: []ResourceChange{
-		createChange("t", "a", nil, map[string]interface{}{"needs": "ref(t.b)"}),
-		createChange("t", "b", nil, map[string]interface{}{"needs": "ref(t.a)"}),
+		createChange("t", "a", []string{"LOC_A"}, map[string]interface{}{"needs": "ref(t.b)"}),
+		createChange("t", "b", []string{"LOC_A"}, map[string]interface{}{"needs": "ref(t.a)"}),
 	}}}
 
 	_, err := Apply(context.Background(), p, plan, st, ApplyOptions{})
@@ -319,23 +320,40 @@ func TestApplyFallsBackToIndividualWrites(t *testing.T) {
 	result, err := Apply(context.Background(), p, plan, st, ApplyOptions{})
 	require.NoError(t, err)
 
-	assert.Equal(t, 2, p.creates, "an adapter without batch support still applies")
+	creates, _ := p.counts()
+	assert.Equal(t, 2, creates, "an adapter without batch support still applies")
 	assert.Len(t, result.Created, 2)
 }
 
 // writeCountingProvider implements Create/Update but not BatchApplier.
+//
+// The counters are mutex-guarded because the fallback path writes
+// concurrently: a provider without batch support is called from several
+// goroutines at once, up to ApplyOptions.Parallelism.
 type writeCountingProvider struct {
 	stubProvider
+
+	mu      sync.Mutex
 	creates int
 	updates int
 }
 
-func (w *writeCountingProvider) Create(_ context.Context, _ string, desired *provider.Resource, _ string) (string, error) {
+func (w *writeCountingProvider) Create(_ context.Context, _ string, desired *provider.Resource) (string, error) {
+	w.mu.Lock()
 	w.creates++
+	w.mu.Unlock()
 	return "ID_" + desired.Name, nil
 }
 
-func (w *writeCountingProvider) Update(_ context.Context, _ string, _ string, _ *provider.Resource, _ string) error {
+func (w *writeCountingProvider) Update(_ context.Context, _ string, _ string, _ *provider.Resource) error {
+	w.mu.Lock()
 	w.updates++
+	w.mu.Unlock()
 	return nil
+}
+
+func (w *writeCountingProvider) counts() (int, int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.creates, w.updates
 }

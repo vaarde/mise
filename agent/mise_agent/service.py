@@ -90,7 +90,7 @@ class MiseOperationsAgent:
             interpretation=analysis.intent.interpretation,
             target_location_ids=rendered.target_location_ids,
             changed_files=rendered.changed_files,
-            plan_path=governed.artifact_path,
+            plan_path=Path(governed.artifact_path).as_posix(),
             plan_id=governed.plan_id,
             plan_hash=governed.plan_hash,
             plan=plan.model_dump(),

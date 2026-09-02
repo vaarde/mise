@@ -89,6 +89,8 @@ def test_clear_request_renders_then_generates_governed_plan(tmp_path: Path) -> N
     assert runner.plan_calls == [".mise/plans/proposal.json"]
     assert result.plan_id and result.plan_id.startswith("plan_")
     assert result.plan_hash and len(result.plan_hash) == 64
-    assert result.plan_path and ".mise/governance/plans/" in result.plan_path
+    assert result.plan_path
+    portable_plan_path = result.plan_path.replace("\\", "/")
+    assert ".mise/governance/plans/" in portable_plan_path
     rendered = yaml.safe_load((root / "taxes.yaml").read_text(encoding="utf-8"))
     assert rendered["resources"][0]["properties"]["percentage"] == "6.5"

@@ -107,16 +107,23 @@ func locationMatches(location provider.Location, matchers map[string]interface{}
 // It accepts a group reference ("${group.georgia}"), the wildcard "*", an
 // explicit list of location IDs, or nothing at all — which means every
 // location, since a resource with no stated scope applies everywhere.
+//
+// An empty result is always an error. Nothing downstream can express
+// "this resource applies nowhere": Square reads an empty location list
+// as present_at_all_locations, so a group that matches nothing — one
+// typo in a state code — would widen the write to the entire account
+// instead of narrowing it. Refusing here is the only place that
+// distinction is still visible.
 func ResolveLocations(field interface{}, groups map[string]LocationGroup, locations []provider.Location) ([]string, error) {
 	if field == nil {
-		return locationIDs(locations), nil
+		return allLocations(locations, "no locations: field, which means every location")
 	}
 
 	switch typed := field.(type) {
 	case string:
 		trimmed := strings.TrimSpace(typed)
 		if trimmed == "" || trimmed == FilterAll {
-			return locationIDs(locations), nil
+			return allLocations(locations, fmt.Sprintf("locations: %q", FilterAll))
 		}
 
 		name, ok := ParseGroupRef(trimmed)
@@ -134,12 +141,22 @@ func ResolveLocations(field interface{}, groups map[string]LocationGroup, locati
 		if err != nil {
 			return nil, fmt.Errorf("location group %q: %w", name, err)
 		}
+		if len(resolved) == 0 {
+			return nil, fmt.Errorf(
+				"location group %q matched none of the %d known %s — check the filter for a typo, "+
+					"or run 'mise fetch' if the locations are new",
+				name, len(locations), pluralize(len(locations), "location", "locations"))
+		}
 		return resolved, nil
 
 	default:
 		ids, err := toStringSlice(field)
 		if err != nil {
 			return nil, fmt.Errorf("cannot read locations: %w", err)
+		}
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("locations: is an empty list — remove the field to mean every location, " +
+				"or name the locations the resource applies at")
 		}
 
 		known := make(map[string]bool, len(locations))
@@ -156,6 +173,24 @@ func ResolveLocations(field interface{}, groups map[string]LocationGroup, locati
 		sort.Strings(sorted)
 		return sorted, nil
 	}
+}
+
+// allLocations returns every location ID, refusing when the account has
+// none. described says how the resource asked for them, so the error
+// points at the config rather than at Mise.
+func allLocations(locations []provider.Location, described string) ([]string, error) {
+	if len(locations) == 0 {
+		return nil, fmt.Errorf("%s, but the account has no locations — run 'mise fetch' first", described)
+	}
+	return locationIDs(locations), nil
+}
+
+// pluralize picks the singular or plural form for a count.
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 // locationIDs returns every location's ID, sorted.

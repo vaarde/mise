@@ -132,18 +132,24 @@ func TestApplyBatchSetsLocationScope(t *testing.T) {
 		"location IDs are sorted so the request is stable")
 }
 
-func TestApplyBatchWithNoLocationsIsAccountWide(t *testing.T) {
+func TestApplyBatchRefusesAnEmptyLocationScope(t *testing.T) {
+	// Square reads an object with no location list as present at every
+	// location. A location group that matched nothing — one typo in a
+	// state code — would therefore widen the write to the whole account
+	// instead of narrowing it. Nothing may be sent.
 	srv := newWriteServer(t, `{"objects":[],"id_mappings":[]}`)
 	p := configuredProvider(t, srv.URL)
 
-	_, err := p.ApplyBatch(context.Background(), []provider.WriteOperation{
+	outcomes, err := p.ApplyBatch(context.Background(), []provider.WriteOperation{
 		writeOp(provider.WriteCreate, TypeTax, "t", map[string]interface{}{"percentage": "1.0"}, nil),
 	})
-	require.NoError(t, err)
+	require.NoError(t, err, "one bad operation does not fail the whole batch")
 
-	object := srv.lastObjects(t)[0]
-	assert.Equal(t, true, object["present_at_all_locations"])
-	assert.NotContains(t, object, "present_at_location_ids")
+	require.Len(t, outcomes, 1)
+	require.Error(t, outcomes[0].Err)
+	assert.Contains(t, outcomes[0].Err.Error(), "no locations to write to")
+
+	assert.Empty(t, srv.requests, "nothing reaches Square when every operation is rejected")
 }
 
 func TestApplyBatchUpdatePassesVersionForConcurrency(t *testing.T) {
@@ -300,7 +306,7 @@ func TestApplyBatchPropagatesAPIErrors(t *testing.T) {
 	p := configuredProvider(t, srv.URL)
 
 	_, err := p.ApplyBatch(context.Background(), []provider.WriteOperation{
-		writeOp(provider.WriteCreate, TypeTax, "t", map[string]interface{}{"percentage": "abc"}, nil),
+		writeOp(provider.WriteCreate, TypeTax, "t", map[string]interface{}{"percentage": "abc"}, []string{"LOC_ATL"}),
 	})
 	require.Error(t, err)
 
@@ -347,7 +353,7 @@ func TestCreateAndUpdateSingleObject(t *testing.T) {
 		Name:        "ga_tax",
 		Properties:  map[string]interface{}{"name": "GA Tax", "percentage": "4.5"},
 		LocationIDs: []string{"LOC_ATL"},
-	}, "LOC_ATL")
+	})
 	require.NoError(t, err)
 	assert.Equal(t, "TAX_NEW", id)
 	assert.Equal(t, "/catalog/object", srv.paths[0])
@@ -357,7 +363,7 @@ func TestCreateAndUpdateSingleObject(t *testing.T) {
 		Properties:  map[string]interface{}{"percentage": "5.0"},
 		LocationIDs: []string{"LOC_ATL"},
 		Version:     "1700000000123",
-	}, "LOC_ATL")
+	})
 	require.NoError(t, err)
 
 	object := srv.requests[1]["object"].(map[string]interface{})
@@ -369,10 +375,10 @@ func TestDeleteRequiresExplicitCall(t *testing.T) {
 	srv := newWriteServer(t, `{"deleted_object_ids":["TAX_1"]}`)
 	p := configuredProvider(t, srv.URL)
 
-	require.NoError(t, p.Delete(context.Background(), TypeTax, "TAX_1", ""))
+	require.NoError(t, p.Delete(context.Background(), TypeTax, "TAX_1"))
 	assert.Equal(t, "/catalog/object/TAX_1", srv.paths[0])
 
-	err := p.Delete(context.Background(), "square_catalog_pizza", "X", "")
+	err := p.Delete(context.Background(), "square_catalog_pizza", "X")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not support resource type")
 }
@@ -393,5 +399,5 @@ func TestWriteRequiresConfiguredProvider(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not configured")
 
-	require.Error(t, p.Delete(context.Background(), TypeTax, "X", ""))
+	require.Error(t, p.Delete(context.Background(), TypeTax, "X"))
 }

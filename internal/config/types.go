@@ -47,6 +47,11 @@ type ResourceDef struct {
 	Locations interface{} `yaml:"locations,omitempty"`
 
 	Properties map[string]interface{} `yaml:"properties"` // resource-specific properties
+
+	// SourceFile is the config file this definition was read from. It is
+	// filled in by the loader, never by YAML, and exists so an error can
+	// name the file the operator has to open.
+	SourceFile string `yaml:"-"`
 }
 
 // FullName returns the fully qualified resource name: "type.name"
