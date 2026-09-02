@@ -118,3 +118,64 @@
 - PRD deepening rounds: 0 additional rounds; participant chose to lock the PRD after the core behavior rounds.
 - PRD written to `docs/hackathon-build/prd.md`.
 - Next step: Technical Spec (`$build-spec`).
+
+## 2026-09-02 — Technical Spec
+
+### Stack and deployment decisions
+- Python is the Strands/AgentCore runtime language.
+- React + TypeScript + Vite is the web console stack.
+- Python invokes the existing Go binary through a controlled subprocess/CLI boundary rather than adding a Go HTTP service.
+- AgentCore deployment plus a public web console are required submission targets, not optional extras.
+- The public console remains frictionless to inspect; mutation/approval controls are protected server-side.
+
+### Architecture decisions
+- Keep all hackathon additions in the existing `vaarde/mise` repository under `agent/`, `console/`, `api/`, and `deploy/`.
+- Strands receives narrow typed tools only; no generic shell tool, arbitrary filesystem editor, or direct Square API capability.
+- Natural-language output is converted into typed change objects. Trusted Python code renders/updates Mise structured configuration; the model does not write arbitrary YAML.
+- Saved plans are cryptographically approval-bound: SHA-256 of the exact `plan.json` reviewed by the operator is validated again before apply.
+- Conversational “yes” never authorizes a write. Approval/apply are explicit protected API operations.
+- The existing Go CLI remains the deterministic execution boundary; add minimal machine interfaces instead of parsing human terminal prose.
+- Add `mise apply --json` for structured apply outcomes.
+- Add a deterministic read-only verification/event surface, preferably `mise verify --plan <plan.json> --jsonl`, so convergence progress is based on actual Square re-reads.
+- Apply and verification are separate UX phases. Apply reports only provable resource/change progress; verification provides location-level convergence progress.
+- One mutating rollout per organization at a time, enforced by a DynamoDB lease/conditional lock.
+
+### Durable state
+- S3 is the durable copy of Mise’s file-oriented workspace, saved plans, draft configs, desired-state revision artifacts, and observed snapshots.
+- DynamoDB stores queryable metadata: plans, approvals, rollouts, overrides, desired-state revision metadata, progress, and organization locks.
+- Square/demo secrets stay in AWS Secrets Manager.
+- AgentCore containers are compute, not the authoritative home of the Mise workspace; runtime hydrates from S3 and syncs trusted changes back.
+- Hackathon runtime is single demo organization but all storage paths/models use `organization_id` for a clear multi-tenant path later.
+
+### Desired-state naming/versioning
+- Desired-state revisions are immutable once approved.
+- Stable machine ID/number remains separate from a descriptive human title.
+- Example display: `Revision 12 — Iowa Fall Menu & Tax Rollout`.
+- The agent proposes the title from the approved action; the operator may edit it before approval.
+- Scheduled checks do **not** create desired-state revisions. They create observed snapshots/audit checkpoints, e.g. `Scheduled Snapshot — 2026-09-06 02:00 UTC`.
+
+### Progress and realtime
+- Corrected the original assumption that Square applies one write per branch. Square may write one catalog object scoped to many locations, so location-count apply progress could be false.
+- Truthful UX is two phases: Apply configuration resources, then Verify location convergence.
+- Verification emits machine progress events that drive `2/200 -> 50/200 -> 120/200 -> 200/200` when those locations have actually been checked.
+- SSE is chosen over WebSockets because the progress channel is one-way server-to-browser; commands remain explicit HTTP POSTs. API Gateway REST response streaming supports SSE/incremental progress.
+
+### Public demo/security
+- Public users can inspect sanitized state/history and safe read-only demo information without login.
+- Protected mutation access is server-side; no frontend-bundled secret or Square credential.
+- Every mutation is also independently protected by exact plan-hash approval.
+- Public demo uses Square sandbox only.
+- Last real verified snapshot/history remains viewable if live dependencies are unavailable, clearly timestamped/labeled as cached rather than live.
+
+### Active shaping moments
+- Dan chose AgentCore + public console as required, increasing technical ambition rather than treating deployment as optional.
+- Dan accepted the corrected Apply -> Verify progress model when Square’s batch/scoped resource behavior showed that per-location apply counters would be misleading.
+- Dan required descriptive immutable desired-state revision names rather than bare `Desired State v12` labels.
+- Dan agreed that scheduled monitoring should remain separate from desired-state version creation.
+- Dan chose public visibility with server-protected mutations to reduce judge friction.
+
+### Deepening / interview state
+- Technical Spec mandatory interview: completed across 4 rounds.
+- Technical Spec deepening rounds: 1 completed.
+- Spec written to `docs/hackathon-build/spec.md`.
+- Next step: Build Checklist (`$build-checklist`).
