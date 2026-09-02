@@ -9,6 +9,8 @@ description = "Strands runtime and safe Mise CLI boundary"
 requires-python = ">=3.10"
 dependencies = [
   "pydantic>=2.7,<3",
+  "PyYAML>=6.0,<7",
+  "strands-agents>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -18,7 +20,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["mise_cli*"]
+include = ["mise_cli*", "mise_agent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
