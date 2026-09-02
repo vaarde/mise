@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,10 @@ class FakeRunner:
 
     def plan(self, output_path: str):
         self.plan_calls.append(output_path)
+        path = self.workspace / output_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"changes": [], "summary": {"to_create": 0, "to_update": 0, "to_delete": 0}, "locations": []}
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
         return PlanDocument(changes=[], summary=PlanSummary(), locations=[])
 
 
@@ -62,7 +67,7 @@ def test_ambiguous_request_stops_before_render_or_plan(tmp_path: Path) -> None:
     assert runner.plan_calls == []
 
 
-def test_clear_request_renders_then_generates_plan(tmp_path: Path) -> None:
+def test_clear_request_renders_then_generates_governed_plan(tmp_path: Path) -> None:
     root = workspace(tmp_path)
     runner = FakeRunner(root)
     intent = ChangeIntent(
@@ -82,5 +87,8 @@ def test_clear_request_renders_then_generates_plan(tmp_path: Path) -> None:
     assert result.status == "planned"
     assert result.target_location_ids == ["IA1"]
     assert runner.plan_calls == [".mise/plans/proposal.json"]
+    assert result.plan_id and result.plan_id.startswith("plan_")
+    assert result.plan_hash and len(result.plan_hash) == 64
+    assert result.plan_path and ".mise/governance/plans/" in result.plan_path
     rendered = yaml.safe_load((root / "taxes.yaml").read_text(encoding="utf-8"))
     assert rendered["resources"][0]["properties"]["percentage"] == "6.5"

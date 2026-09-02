@@ -8,6 +8,7 @@ from strands import Agent
 from mise_cli.runner import MiseRunner
 
 from .config_renderer import ConfigRenderer
+from .governance import GovernanceStore
 from .models import IntentAnalysis, ProposalResult
 from .tools import ToolContext, build_read_tools
 
@@ -46,10 +47,12 @@ class MiseOperationsAgent:
         workspace: str | Path,
         runner: MiseRunner,
         agent: AgentCallable | None = None,
+        governance: GovernanceStore | None = None,
     ) -> None:
         self.workspace = Path(workspace)
         self.runner = runner
         self.renderer = ConfigRenderer(workspace)
+        self.governance = governance or GovernanceStore(workspace)
         self.agent = agent or create_strands_agent(ToolContext(workspace, runner))
 
     def analyze(self, prompt: str) -> IntentAnalysis:
@@ -59,7 +62,13 @@ class MiseOperationsAgent:
             analysis = IntentAnalysis.model_validate(analysis)
         return analysis
 
-    def prepare_plan(self, prompt: str, plan_path: str = ".mise/plans/proposal.json") -> ProposalResult:
+    def prepare_plan(
+        self,
+        prompt: str,
+        plan_path: str = ".mise/plans/proposal.json",
+        *,
+        supersedes_plan_id: str | None = None,
+    ) -> ProposalResult:
         analysis = self.analyze(prompt)
         if analysis.needs_clarification:
             return ProposalResult(
@@ -71,11 +80,18 @@ class MiseOperationsAgent:
         assert analysis.intent is not None
         rendered = self.renderer.render(analysis.intent)
         plan = self.runner.plan(plan_path)
+        governed = self.governance.register_plan(
+            plan_path,
+            title=analysis.intent.title,
+            supersedes_plan_id=supersedes_plan_id,
+        )
         return ProposalResult(
             status="planned",
             interpretation=analysis.intent.interpretation,
             target_location_ids=rendered.target_location_ids,
             changed_files=rendered.changed_files,
-            plan_path=plan_path,
+            plan_path=governed.artifact_path,
+            plan_id=governed.plan_id,
+            plan_hash=governed.plan_hash,
             plan=plan.model_dump(),
         )

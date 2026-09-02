@@ -71,4 +71,6 @@ class ProposalResult(BaseModel):
     target_location_ids: list[str] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
     plan_path: str | None = None
+    plan_id: str | None = None
+    plan_hash: str | None = None
     plan: dict[str, Any] | None = None
