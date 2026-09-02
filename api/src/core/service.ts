@@ -141,7 +141,8 @@ export class MiseApiService {
       rollout_id: rolloutId,
       plan_id: plan.plan_id,
       status: "queued",
-      changes_total: numberFromSummary(plan.summary, "to_create") + numberFromSummary(plan.summary, "to_update"),
+      changes_total:
+        numberFromSummary(plan.summary, "to_create") + numberFromSummary(plan.summary, "to_update"),
       changes_completed: 0,
       locations_total: 0,
       locations_verified: 0,
@@ -205,10 +206,11 @@ export class MiseApiService {
     data: Record<string, unknown>,
   ): Promise<void> {
     const existing = await this.deps.metadata.listRolloutEvents(this.organizationId, rolloutId);
+    const lastSequence = existing.reduce((max, event) => Math.max(max, event.sequence), 0);
     await this.deps.metadata.appendRolloutEvent({
       organization_id: this.organizationId,
       rollout_id: rolloutId,
-      sequence: existing.length + 1,
+      sequence: lastSequence + 1,
       event_type: eventType,
       created_at: this.deps.now(),
       data,
@@ -240,12 +242,18 @@ function numberFromSummary(summary: Record<string, unknown> | undefined, key: st
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function latestBy<T extends Record<string, unknown>>(items: T[], key: string): T | null {
+function latestBy<T, K extends keyof T>(items: T[], key: K): T | null {
   if (!items.length) return null;
-  return [...items].sort((a, b) => String(b[key] ?? "").localeCompare(String(a[key] ?? "")))[0] ?? null;
+  return (
+    [...items].sort((a, b) => String(b[key] ?? "").localeCompare(String(a[key] ?? "")))[0] ?? null
+  );
 }
 
 function latestRevision<T extends Record<string, unknown>>(items: T[]): T | null {
   if (!items.length) return null;
-  return [...items].sort((a, b) => Number(b.revision_number ?? 0) - Number(a.revision_number ?? 0))[0] ?? null;
+  return (
+    [...items].sort(
+      (a, b) => Number(b.revision_number ?? 0) - Number(a.revision_number ?? 0),
+    )[0] ?? null
+  );
 }
