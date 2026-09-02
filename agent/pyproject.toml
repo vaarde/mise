@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Strands runtime and safe Mise CLI boundary"
 requires-python = ">=3.10"
 dependencies = [
+  "boto3>=1.35,<2",
   "pydantic>=2.7,<3",
   "PyYAML>=6.0,<7",
   "strands-agents>=1.0",
