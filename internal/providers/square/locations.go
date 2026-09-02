@@ -2,6 +2,8 @@ package square
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/vaarde/mise/internal/provider"
@@ -49,6 +51,49 @@ func (c *Client) ListLocations(ctx context.Context) ([]provider.Location, error)
 		locations = append(locations, toProviderLocation(l))
 	}
 	return locations, nil
+}
+
+// AccountID returns the Square merchant ID the current token reaches.
+//
+// It implements provider.AccountIdentifier, which is what stops a
+// workspace fetched from one merchant being applied to another. Square
+// stamps every location with its merchant, so no extra call is needed —
+// and every command lists locations anyway.
+//
+// A token that reaches more than one merchant would make the answer
+// ambiguous, so that is reported rather than guessed at.
+func (p *SquareProvider) AccountID(ctx context.Context) (string, error) {
+	if p.client == nil {
+		return "", fmt.Errorf("square provider is not configured")
+	}
+
+	var resp listLocationsResponse
+	if err := p.client.Get(ctx, "/locations", &resp); err != nil {
+		return "", err
+	}
+
+	merchants := make([]string, 0, 1)
+	for _, l := range resp.Locations {
+		if l.MerchantID == "" {
+			continue
+		}
+		if !containsString(merchants, l.MerchantID) {
+			merchants = append(merchants, l.MerchantID)
+		}
+	}
+	sort.Strings(merchants)
+
+	switch len(merchants) {
+	case 0:
+		// Square has always returned a merchant ID; if a future response
+		// omits it, say so rather than reporting an empty account.
+		return "", fmt.Errorf("Square did not report a merchant ID for any location")
+	case 1:
+		return merchants[0], nil
+	default:
+		return "", fmt.Errorf("this token reaches %d Square merchants (%s) — Mise manages one account per workspace",
+			len(merchants), strings.Join(merchants, ", "))
+	}
 }
 
 // toProviderLocation maps a Square location onto Mise's

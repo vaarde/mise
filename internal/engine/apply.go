@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/vaarde/mise/internal/config"
@@ -16,6 +17,17 @@ type ApplyOptions struct {
 	// Parallelism caps concurrent API calls for providers without batch
 	// support. Zero means DefaultParallelism.
 	Parallelism int
+
+	// Checkpoint, when set, is called with the state after each wave
+	// completes. It is how a long apply survives a crash: without it,
+	// state reaches disk only when Apply returns, so a power loss after
+	// wave three of five leaves three waves of live POS objects that
+	// Mise has no record of creating — and the next apply creates them
+	// all over again.
+	//
+	// A checkpoint that fails stops the apply. Continuing would widen
+	// exactly the gap the checkpoint exists to close.
+	Checkpoint func(*state.State) error
 }
 
 // ApplyResult reports what an apply actually did.
@@ -48,7 +60,8 @@ func (r *ApplyResult) Total() int { return len(r.Created) + len(r.Updated) }
 // State is written by the caller after Apply returns, including when
 // Apply returns an error: a partial apply must still record the
 // resources that did land, or the next plan would try to create them a
-// second time.
+// second time. Set ApplyOptions.Checkpoint to have state persisted
+// after each wave as well.
 func Apply(
 	ctx context.Context,
 	p provider.Provider,
@@ -59,6 +72,10 @@ func Apply(
 	result := &ApplyResult{}
 	if len(plan.Changes) == 0 {
 		return result, nil
+	}
+
+	if err := checkWritable(plan.Changes); err != nil {
+		return result, err
 	}
 
 	waves, err := OrderChanges(plan.Changes, nil)
@@ -94,10 +111,16 @@ func Apply(
 			// to create things that already exist, so say what is actually
 			// known — that the outcome is unknown — and point at drift.
 			if ctxErr := ctx.Err(); ctxErr != nil {
+				// Whatever did report back before the cancellation is
+				// known, so record it rather than throwing it away.
+				accounted := recordOutcomes(result, wave, ops, outcomes, st, appliedAt)
 				st.LastApply = &appliedAt
+				saveCheckpoint(opts, st)
+
+				unknown := len(ops) - accounted
 				return result, fmt.Errorf(
 					"apply interrupted while writing %d %s: whether the change reached the POS is unknown — run 'mise drift' before retrying: %w",
-					len(ops), pluralizeWord(len(ops), "resource", "resources"), ctxErr)
+					unknown, pluralizeWord(unknown, "resource", "resources"), ctxErr)
 			}
 
 			// The whole call failed, so nothing in this wave landed.
@@ -114,6 +137,14 @@ func Apply(
 
 		recordOutcomes(result, wave, ops, outcomes, st, appliedAt)
 
+		// Persist what this wave did before starting the next one, so a
+		// crash costs at most one wave rather than the whole run.
+		if err := saveCheckpointErr(opts, st); err != nil {
+			st.LastApply = &appliedAt
+			return result, fmt.Errorf("a wave was applied but state could not be saved, "+
+				"so a retry would repeat it — run 'mise drift' to see what is live: %w", err)
+		}
+
 		// A resource that failed is a dependency nothing later can rely
 		// on, so stop rather than cascading confusing errors.
 		if result.HasFailures() {
@@ -128,6 +159,47 @@ func Apply(
 			len(result.Failed), pluralizeWord(len(result.Failed), "resource", "resources"))
 	}
 	return result, nil
+}
+
+// checkWritable rejects a plan that cannot be executed as written.
+//
+// Both cases below are caught when a plan is computed in the same run,
+// but "mise apply --plan" executes a file, and a file can be edited.
+// Neither would fail loudly at the POS: an empty location list reads as
+// "every location" to Square, and a repeated resource would quietly
+// collapse into whichever copy came last.
+func checkWritable(changes []ResourceChange) error {
+	seen := make(map[string]bool, len(changes))
+
+	for _, change := range changes {
+		name := change.FullName()
+		if seen[name] {
+			return fmt.Errorf("the plan contains %s twice — Mise identifies a resource by its type and name, "+
+				"so only one of the two would be applied", name)
+		}
+		seen[name] = true
+
+		if len(change.LocationIDs) == 0 {
+			return fmt.Errorf("%s has no locations to apply at — a POS that scopes by location list "+
+				"reads an empty one as every location, which is the opposite of what this says", name)
+		}
+	}
+
+	return nil
+}
+
+// saveCheckpoint saves state, ignoring the error. Used where the apply
+// is already returning an error and there is nothing further to add.
+func saveCheckpoint(opts ApplyOptions, st *state.State) {
+	_ = saveCheckpointErr(opts, st)
+}
+
+// saveCheckpointErr saves state after a wave, if one is configured.
+func saveCheckpointErr(opts ApplyOptions, st *state.State) error {
+	if opts.Checkpoint == nil {
+		return nil
+	}
+	return opts.Checkpoint(st)
 }
 
 // buildOperations turns a wave of changes into write operations,
@@ -201,8 +273,20 @@ func writeBatch(
 	return writeIndividually(ctx, p, ops, parallelism)
 }
 
-// writeIndividually applies operations one at a time, for adapters
-// without batch support.
+// writeIndividually writes one resource per call, for adapters without
+// batch support.
+//
+// Everything in a wave is independent by construction, so the writes run
+// concurrently up to parallelism — which is what ApplyOptions.Parallelism
+// has always promised and, until now, quietly did not do.
+//
+// Cancellation stops new writes from starting and returns the context
+// error alongside the outcomes that did come back. Apply then reports
+// the rest as unknown rather than failed, because a request cut off
+// mid-flight may still have reached the POS. Returning a nil error here,
+// as an earlier version did, made Apply treat a Ctrl-C as an ordinary
+// failure and send the operator to re-create resources that may already
+// exist — the exact outcome the batch path takes care to avoid.
 func writeIndividually(
 	ctx context.Context,
 	p provider.Provider,
@@ -212,32 +296,80 @@ func writeIndividually(
 	if parallelism <= 0 {
 		parallelism = DefaultParallelism
 	}
-
-	outcomes := make([]provider.WriteOutcome, len(ops))
-
-	for i, op := range ops {
-		outcome := provider.WriteOutcome{Name: op.Name, ProviderID: op.Resource.ProviderID}
-
-		locationID := ""
-		if len(op.Resource.LocationIDs) > 0 {
-			locationID = op.Resource.LocationIDs[0]
-		}
-
-		switch op.Action {
-		case provider.WriteCreate:
-			id, err := p.Create(ctx, op.Resource.Type, op.Resource, locationID)
-			outcome.ProviderID, outcome.Err = id, err
-		case provider.WriteUpdate:
-			outcome.Err = p.Update(ctx, op.Resource.Type, op.Resource.ProviderID, op.Resource, locationID)
-		}
-
-		outcomes[i] = outcome
+	if parallelism > len(ops) {
+		parallelism = len(ops)
 	}
 
+	var (
+		mu       sync.Mutex
+		outcomes = make([]provider.WriteOutcome, 0, len(ops))
+		wg       sync.WaitGroup
+		slots    = make(chan struct{}, parallelism)
+	)
+
+	for _, op := range ops {
+		// A slot has to be free before the next write starts, and a
+		// cancelled run must not sit waiting for one.
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+
+		wg.Add(1)
+		go func(op provider.WriteOperation) {
+			defer wg.Done()
+			defer func() { <-slots }()
+
+			outcome := writeOne(ctx, p, op)
+
+			mu.Lock()
+			outcomes = append(outcomes, outcome)
+			mu.Unlock()
+		}(op)
+	}
+
+	wg.Wait()
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return outcomes, ctxErr
+	}
 	return outcomes, nil
 }
 
-// recordOutcomes folds a wave's results into the apply result and state.
+// writeOne performs a single create or update.
+//
+// The scope comes from op.Resource.LocationIDs. There is no separate
+// location argument: the interface used to pass one *and* the full set,
+// and handing an adapter the first ID of forty was not a contract
+// anything could implement correctly.
+func writeOne(ctx context.Context, p provider.Provider, op provider.WriteOperation) provider.WriteOutcome {
+	outcome := provider.WriteOutcome{Name: op.Name, ProviderID: op.Resource.ProviderID}
+
+	switch op.Action {
+	case provider.WriteCreate:
+		id, err := p.Create(ctx, op.Resource.Type, op.Resource)
+		if err == nil {
+			outcome.ProviderID = id
+		}
+		outcome.Err = err
+	case provider.WriteUpdate:
+		outcome.Err = p.Update(ctx, op.Resource.Type, op.Resource.ProviderID, op.Resource)
+	}
+
+	return outcome
+}
+
+// recordOutcomes folds a wave's results into the apply result and state,
+// and reports how many operations the outcomes accounted for.
+//
+// Outcomes are matched to operations by name rather than by position. A
+// batch adapter returns them in order, but the individual path completes
+// concurrently and returns fewer than it was given when a run is
+// cancelled — position would then attribute one resource's result to
+// another.
 func recordOutcomes(
 	result *ApplyResult,
 	wave Wave,
@@ -245,18 +377,27 @@ func recordOutcomes(
 	outcomes []provider.WriteOutcome,
 	st *state.State,
 	appliedAt time.Time,
-) {
+) int {
 	changesByName := make(map[string]ResourceChange, len(wave))
 	for _, change := range wave {
 		changesByName[change.FullName()] = change
 	}
 
-	for i, outcome := range outcomes {
-		if i >= len(ops) {
-			break
+	opsByName := make(map[string]provider.WriteOperation, len(ops))
+	for _, op := range ops {
+		opsByName[op.Name] = op
+	}
+
+	accounted := 0
+	for _, outcome := range outcomes {
+		op, ok := opsByName[outcome.Name]
+		if !ok {
+			// A provider naming an outcome Mise never asked for is
+			// misbehaving; there is nothing sound to record for it.
+			continue
 		}
-		op := ops[i]
 		change := changesByName[op.Name]
+		accounted++
 
 		if outcome.Err != nil {
 			result.Failed = append(result.Failed, ApplyFailure{
@@ -294,6 +435,7 @@ func recordOutcomes(
 
 	sort.Strings(result.Created)
 	sort.Strings(result.Updated)
+	return accounted
 }
 
 // actionFor infers the action from whether an ID already exists.

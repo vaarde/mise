@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -8,17 +7,12 @@ from typing import Iterable
 
 from pydantic import ValidationError
 
-from .contracts import ApplyResult, DriftResult, PlanDocument, VerifyEvent
+from .contracts import ApplyResult, DriftResult, PlanDocument, SavedPlanDocument, VerifyEvent
 from .errors import MiseCommandError, MiseProtocolError, MiseTimeout
 
 
 class MiseRunner:
-    """Allow-listed subprocess adapter for the Mise CLI.
-
-    The runner intentionally exposes methods, not a generic command executor.
-    It never uses a shell and confines plan artifacts to the organization
-    workspace supplied at construction time.
-    """
+    """Allow-listed subprocess adapter for the Mise CLI."""
 
     def __init__(
         self,
@@ -49,7 +43,15 @@ class MiseRunner:
             args += ["--location", location]
         self._execute(args, accepted_codes={0})
         try:
-            return PlanDocument.model_validate_json(path.read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
+            try:
+                return SavedPlanDocument.model_validate_json(raw).plan
+            except ValidationError:
+                # Retain compatibility with lightweight test fixtures and
+                # pre-provenance development artifacts. The Go CLI itself
+                # refuses old saved plans for apply; this fallback is only
+                # for reading a plan shape in the Python boundary.
+                return PlanDocument.model_validate_json(raw)
         except (OSError, ValidationError, ValueError) as exc:
             raise MiseProtocolError(f"cannot parse saved Mise plan {path}: {exc}") from exc
 
@@ -64,9 +66,7 @@ class MiseRunner:
         except (ValidationError, ValueError) as exc:
             raise MiseCommandError(completed.returncode, completed.stderr, completed.stdout) from exc
 
-        result = result.model_copy(
-            update={"return_code": completed.returncode, "stderr": completed.stderr}
-        )
+        result = result.model_copy(update={"return_code": completed.returncode, "stderr": completed.stderr})
         if completed.returncode != 0 and result.status not in {"partial", "outcome_uncertain", "failed"}:
             raise MiseCommandError(completed.returncode, completed.stderr, completed.stdout)
         return result
@@ -91,9 +91,7 @@ class MiseRunner:
 
     def verify(self, plan_path: str | Path) -> list[VerifyEvent]:
         path = self._workspace_path(plan_path)
-        completed = self._execute(
-            ["verify", "--plan", str(path), "--jsonl"], accepted_codes={0}
-        )
+        completed = self._execute(["verify", "--plan", str(path), "--jsonl"], accepted_codes={0})
         events: list[VerifyEvent] = []
         for line_number, line in enumerate(completed.stdout.splitlines(), start=1):
             if not line.strip():
@@ -101,9 +99,7 @@ class MiseRunner:
             try:
                 events.append(VerifyEvent.model_validate_json(line))
             except (ValidationError, ValueError) as exc:
-                raise MiseProtocolError(
-                    f"invalid verify JSONL at line {line_number}: {exc}"
-                ) from exc
+                raise MiseProtocolError(f"invalid verify JSONL at line {line_number}: {exc}") from exc
         if not events or events[-1].type != "verify_complete":
             raise MiseProtocolError("verify stream ended without verify_complete")
         return events

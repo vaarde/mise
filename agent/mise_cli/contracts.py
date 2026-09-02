@@ -46,6 +46,22 @@ class PlanDocument(StrictModel):
     locations: list[Location] = Field(default_factory=list)
 
 
+class PlanIdentity(StrictModel):
+    provider: str = ""
+    environment: str = ""
+    account_id: str = ""
+
+
+class SavedPlanDocument(StrictModel):
+    format_version: int
+    mise_version: str
+    created_at: str
+    identity: PlanIdentity
+    state_serial: int
+    config_digest: str
+    plan: PlanDocument
+
+
 class ApplyFailure(StrictModel):
     resource: str
     action: str

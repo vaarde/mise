@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sync"
 
 	"github.com/vaarde/mise/internal/config"
 	"github.com/vaarde/mise/internal/credentials"
 	"github.com/vaarde/mise/internal/provider"
 	"github.com/vaarde/mise/internal/providers/square"
+	"github.com/vaarde/mise/internal/state"
 )
 
 // workspace is a loaded Mise workspace: the root config, the credentials
@@ -20,6 +22,69 @@ type workspace struct {
 	Config   *config.RootConfig
 	Creds    *credentials.Credentials
 	Provider provider.Provider
+
+	// identity caches the account the credentials reach. Resolving it
+	// costs an API call, and plan, apply and drift each want it.
+	identity     *state.Identity
+	identityOnce sync.Once
+	identityErr  error
+}
+
+// Identity reports which POS account this workspace's credentials
+// actually reach.
+//
+// The platform and environment come from mise.yaml. The account itself
+// comes from the adapter, when it can name one — an adapter that cannot
+// leaves it empty rather than guessing, and the check degrades to
+// platform and environment.
+func (ws *workspace) Identity(ctx context.Context) (state.Identity, error) {
+	ws.identityOnce.Do(func() {
+		id := state.Identity{
+			Provider:    ws.Config.Provider.Platform,
+			Environment: ws.Config.Provider.Environment,
+		}
+
+		if namer, ok := ws.Provider.(provider.AccountIdentifier); ok {
+			accountID, err := namer.AccountID(ctx)
+			if err != nil {
+				ws.identityErr = fmt.Errorf("cannot confirm which %s account these credentials reach: %w",
+					ws.Config.Provider.Platform, err)
+				return
+			}
+			id.AccountID = accountID
+		}
+
+		ws.identity = &id
+	})
+
+	if ws.identityErr != nil {
+		return state.Identity{}, ws.identityErr
+	}
+	return *ws.identity, nil
+}
+
+// CheckStateIdentity refuses to operate on state that belongs to a
+// different POS account.
+//
+// Provider IDs are only meaningful within the account that issued them.
+// Without this check, pointing a workspace at a second merchant makes
+// every recorded ID miss, so plan reads each resource as deleted and
+// proposes to create it — duplicating the whole configuration into the
+// wrong account, quietly and successfully.
+//
+// State written before Mise recorded an identity has nothing to compare,
+// and is allowed through; the next fetch or apply stamps it.
+func (ws *workspace) CheckStateIdentity(ctx context.Context, st *state.State) error {
+	recorded := st.Identity()
+	if recorded.IsZero() {
+		return nil
+	}
+
+	current, err := ws.Identity(ctx)
+	if err != nil {
+		return err
+	}
+	return recorded.Check(current)
 }
 
 // loadWorkspace reads mise.yaml, resolves credentials, and returns a

@@ -53,31 +53,38 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	plan, err := LoadPlan(verifyPlanFile)
+	saved, err := LoadPlan(verifyPlanFile)
 	if err != nil {
 		return err
 	}
+	currentIdentity, err := ws.Identity(ctx)
+	if err != nil {
+		return err
+	}
+	if err := saved.Identity.Check(currentIdentity); err != nil {
+		return fmt.Errorf("this plan was not built for the account you are verifying against.\n%w", err)
+	}
 	st, err := state.Load(ws.Dir)
 	if err != nil {
+		return err
+	}
+	if err := ws.CheckStateIdentity(ctx, st); err != nil {
 		return err
 	}
 
 	var emit func(engine.VerifyEvent) error
 	if verifyJSONL {
 		encoder := json.NewEncoder(out)
-		emit = func(event engine.VerifyEvent) error {
-			return encoder.Encode(event)
-		}
+		emit = func(event engine.VerifyEvent) error { return encoder.Encode(event) }
 	}
 
-	result, err := engine.Verify(ctx, ws.Provider, plan, st, emit)
+	result, err := engine.Verify(ctx, ws.Provider, saved.Plan, st, emit)
 	if err != nil {
 		return err
 	}
 	if verifyJSONL {
 		return nil
 	}
-
 	printVerifySummary(out, result)
 	return nil
 }

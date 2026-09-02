@@ -201,14 +201,14 @@ func TestPlanSavesAndReloadsAPlanFile(t *testing.T) {
 	loaded, err := LoadPlan(planFile)
 	require.NoError(t, err)
 
-	require.Len(t, loaded.Changes, 1)
-	change := loaded.Changes[0]
+	require.Len(t, loaded.Plan.Changes, 1)
+	change := loaded.Plan.Changes[0]
 	assert.Equal(t, engine.ActionUpdate, change.Action)
 	assert.Equal(t, "fakepos_tax.state_tax", change.FullName())
 	assert.Equal(t, "TAX_1", change.ProviderID)
 	assert.Equal(t, "7.25", change.Desired["percentage"],
 		"the saved plan carries the full desired state, not just the diff")
-	assert.Len(t, loaded.Locations, 2, "a saved plan remembers the locations it covered")
+	assert.Len(t, loaded.Plan.Locations, 2, "a saved plan remembers the locations it covered")
 }
 
 func TestPlanRequiresAWorkspace(t *testing.T) {

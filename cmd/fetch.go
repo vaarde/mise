@@ -13,6 +13,7 @@ import (
 
 	"github.com/vaarde/mise/internal/config"
 	"github.com/vaarde/mise/internal/engine"
+	"github.com/vaarde/mise/internal/state"
 )
 
 var fetchCmd = &cobra.Command{
@@ -60,6 +61,22 @@ func runFetch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Fetching a second account into a workspace that already tracks one
+	// would orphan every resource the first account owns: the state file
+	// is replaced wholesale, and nothing afterwards would know those live
+	// objects were ever managed. --force is the existing way to say "yes,
+	// replace this workspace's contents".
+	if !fetchForce {
+		if err := checkFetchIdentity(ctx, ws); err != nil {
+			return err
+		}
+	}
+
+	identity, err := ws.Identity(ctx)
+	if err != nil {
+		return err
+	}
+
 	fmt.Fprintf(out, "Fetching live configuration from %s (%s)...\n",
 		ws.Config.Provider.Platform, environmentLabel(ws.Config.Provider.Environment))
 
@@ -74,12 +91,26 @@ func runFetch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	written, err := writeFetchedFiles(ws, result)
+	written, err := writeFetchedFiles(ws, result, identity)
 	if err != nil {
 		return err
 	}
 
 	printFetchSummary(out, result, written)
+	return nil
+}
+
+// checkFetchIdentity refuses to overwrite a workspace that tracks a
+// different POS account.
+func checkFetchIdentity(ctx context.Context, ws *workspace) error {
+	st, err := state.Load(ws.Dir)
+	if err != nil {
+		return err
+	}
+
+	if err := ws.CheckStateIdentity(ctx, st); err != nil {
+		return fmt.Errorf("%w\n\nIf you do mean to replace this workspace's contents, pass --force", err)
+	}
 	return nil
 }
 
@@ -113,7 +144,7 @@ func confirmOverwrite(out io.Writer, ws *workspace, force bool) error {
 }
 
 // writeFetchedFiles writes the config files and the state file.
-func writeFetchedFiles(ws *workspace, result *engine.FetchResult) ([]string, error) {
+func writeFetchedFiles(ws *workspace, result *engine.FetchResult, identity state.Identity) ([]string, error) {
 	locationsFile, err := config.GenerateLocationsFile(ws.Dir, result.Locations)
 	if err != nil {
 		return nil, err
@@ -126,7 +157,12 @@ func writeFetchedFiles(ws *workspace, result *engine.FetchResult) ([]string, err
 
 	// State is written last: it records what Mise believes is on disk,
 	// so it should only claim a fetch happened once the files exist.
-	if err := result.ToState(ws.Provider.Name(), time.Now().UTC()).Save(ws.Dir); err != nil {
+	//
+	// The identity goes in with it. Every provider ID below is only
+	// meaningful within this account, and this is where that is recorded.
+	st := result.ToState(ws.Provider.Name(), time.Now().UTC())
+	st.SetIdentity(identity)
+	if err := st.Save(ws.Dir); err != nil {
 		return nil, err
 	}
 

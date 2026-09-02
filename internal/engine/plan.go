@@ -65,6 +65,12 @@ func ComputePlan(
 		return nil, err
 	}
 
+	// A property the adapter does not recognize is dropped on the way to
+	// the API, so it has to be caught here or not at all.
+	if err := ValidateDeclared(p, declared); err != nil {
+		return nil, err
+	}
+
 	locations, err := p.ListLocations(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("cannot list locations: %w", err)
