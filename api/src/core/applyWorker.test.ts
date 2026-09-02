@@ -105,6 +105,7 @@ async function fixture(result: ApplyRuntimeResult) {
   return {
     metadata,
     lock,
+    mutationLock: lock,
     runtime: new Runtime(result),
     now: () => `2026-09-02T19:${String(10 + tick++).padStart(2, "0")}:00Z`,
   };
@@ -126,7 +127,7 @@ test("successful apply progresses through real verification and converges", asyn
   assert.equal(final.locations_verified, 2);
   assert.equal(final.converged_count, 2);
   assert.equal(final.non_converged_count, 0);
-  assert.equal(deps.lock.released, [job.rollout_id]);
+  assert.deepEqual(deps.lock.released, [job.rollout_id]);
   assert.deepEqual(
     deps.metadata.events.map((event) => event.event_type),
     [
@@ -167,7 +168,7 @@ test("outcome uncertain remains distinct and requires verification before retry"
 
   const final = await runApplyWorker(job, deps);
   assert.equal(final.status, "outcome_uncertain");
-  assert.equal(deps.lock.released, [job.rollout_id]);
+  assert.deepEqual(deps.lock.released, [job.rollout_id]);
   const uncertain = deps.metadata.events.find((event) => event.event_type === "outcome_uncertain");
   assert.equal(uncertain?.data.remediation, "verification_required_before_retry");
 });
