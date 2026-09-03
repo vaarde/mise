@@ -11,7 +11,7 @@ The runtime follows the AgentCore HTTP contract:
 - non-root runtime user
 - MMDSv2 enabled after runtime creation/update
 
-The browser never invokes this container directly. The thin Mise API calls AgentCore for chat/planning, and the protected apply worker calls the same runtime in deterministic apply mode.
+The browser never invokes this container directly. The thin Mise API calls AgentCore for request interpretation/planning, and the protected apply worker calls the same runtime in deterministic apply mode.
 
 ## Runtime modes
 
@@ -155,13 +155,24 @@ export RUNTIME_ARN="$(aws bedrock-agentcore-control list-agent-runtimes \
 
 ## 7. Prove the deployed runtime
 
-The smoke test first performs a read-only estate query. It then sends the flagship change request, requires a clarification turn, and produces a governed plan using the **same AgentCore runtime session**. It never approves or applies the plan.
+The Item 8 smoke test uses the **real Square sandbox workspace**, not the simulated 200-location public-demo estate. It first performs a read-only estate query. It then asks to change the existing Nashville City Tax without providing the new rate, requires a clarification turn, and produces a governed proposal using the same AgentCore runtime session. It never approves or applies the plan.
 
 ```bash
 python deploy/agentcore/smoke.py \
   --region "$AWS_REGION" \
   --runtime-arn "$RUNTIME_ARN" \
   --organization-id "$ORG"
+```
+
+The default request targets the already-tested `Mise Test - Nashville` / `Nashville City Tax` sandbox fixture. If the sandbox fixture changes later, override both smoke prompts explicitly:
+
+```bash
+python deploy/agentcore/smoke.py \
+  --region "$AWS_REGION" \
+  --runtime-arn "$RUNTIME_ARN" \
+  --organization-id "$ORG" \
+  --plan-request "At <sandbox location>, update <existing resource>. I have not given you the new value yet. Do not apply anything." \
+  --clarification "Use <new sandbox-only value> and make it effective now."
 ```
 
 For a read-only smoke test only:
@@ -173,6 +184,8 @@ python deploy/agentcore/smoke.py \
   --organization-id "$ORG" \
   --skip-plan
 ```
+
+The larger 200-location Iowa/airport-exception scenario remains the public demo and Item 9 presentation flow. We do not fabricate that estate inside the real Square sandbox.
 
 ## Local container contract check
 
@@ -202,7 +215,10 @@ Expected:
 - The model has no generic shell tool and no direct Square-write tool.
 - The compiled `mise` binary is invoked through the fixed `MiseRunner` allow-list with `shell=False`.
 - Chat/planning cannot approve or apply a plan.
+- Unapproved planning stores proposal artifacts separately and does not change the active desired workspace.
+- Approval copies the reviewed draft configuration into an immutable desired-state revision and promotes it to the active workspace; Square is still untouched until apply.
 - Apply receives only a server-approved S3 plan key/hash, validates organization ownership, and rehashes the exact bytes before executing.
+- Only the plan bound to the latest desired-state revision may start a rollout.
 - Square credentials stay server-side and are not persisted in the S3 workspace.
 - The runtime container runs as a non-root user.
 - The execution role is scoped to the generated repository, bucket, table, Square secret, Bedrock inference, and AgentCore observability needs.
