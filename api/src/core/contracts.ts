@@ -30,6 +30,7 @@ export interface PlanRecord {
   created_at: string;
   approved_at?: string | null;
   approved_by?: string | null;
+  revision_id?: string | null;
 }
 
 export interface ApprovalRecord {
