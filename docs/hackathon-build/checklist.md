@@ -30,20 +30,14 @@ Verified on 2026-09-02 with Go/Python tests on Windows and Ubuntu plus a real Sq
 - [x] **5. Add durable S3 workspace storage, DynamoDB metadata and organization write locking**
   Implemented S3 workspace hydrate/sync with credential/lock exclusion and a completion manifest; S3 plan/draft/snapshot/revision artifact layout; typed DynamoDB plan/approval/rollout/override/snapshot/revision metadata; and an expiring conditional-write organization mutation lease. Verified with hydrate→sync→rehydrate, metadata round-trip, stale deletion, lock contention/takeover/renewal/release tests on Ubuntu and Windows CI.
 
-- [ ] **6. Build the thin browser-facing API and SSE rollout stream**
-  Spec ref: `spec.md > Thin API layer`, `spec.md > API layer`, and `spec.md > Data Flow > D/E`
-  What to build: Add public read-only estate/plan/history endpoints; `POST /agent/messages`; protected `POST /plans/{id}/approve`, `POST /plans/{id}/apply`, retry/override mutation endpoints as required; server-side AgentCore invocation; plan-hash revalidation; demo mutation-access protection; rollout-state persistence; SSE endpoint that streams apply/verify phase and convergence progress from stored events/state.
-  Acceptance: Browser never receives AWS/Square credentials; chat cannot authorize writes; protected actions reject unauthenticated mutation attempts; plan hash is rechecked at apply; SSE reconnects and exposes truthful phase/progress rather than fabricated counts.
-  Verify: API unit/integration tests; curl public GETs, unauthorized/authorized POSTs, stale-plan refusal and SSE event stream; confirm an `outcome_uncertain` rollout is surfaced distinctly from generic failure.
+- [x] **6. Build the thin browser-facing API and SSE rollout stream**
+  Implemented public estate/history/plan/rollout reads and agent messaging; server-protected approve/apply/retry operations; exact S3 plan-byte SHA-256 revalidation; async apply dispatch; deterministic AgentCore apply-worker mode; persisted Apply→Verify events; resumable EventSource-compatible SSE; and distinct `outcome_uncertain` handling. Verified by Go, Python, TypeScript compilation and API tests on Windows and Ubuntu, including stale-plan refusal, protected mutations, chat/write separation and non-convergence behavior.
 
-- [ ] **7. Build the React/Vite franchise operations console**
-  Spec ref: `spec.md > Web console` and `prd.md > Epic 12: Provide a small, coherent operations console`
-  What to build: Implement Overview, Changes, Drift and Locations; first-run/no-baseline state; agent conversation panel; structured-config inspection; compact plan/blast-radius summary; protected approval controls; two-phase Apply→Verify progress; convergence/non-convergence status; drift explanation and remediation/override entry points. Use a restrained, stable enterprise visual system.
-  Acceptance: A judge can understand estate health and the main workflow without CLI knowledge; write controls are visually distinct and protected; verification can visibly progress `2/200 → 50/200 → …`; observed state, desired state and convergence are never conflated; stale cached data is timestamped and not presented as live.
-  Verify: Run frontend tests/build; manually execute the entire mocked/local workflow; inspect responsive desktop view and all empty/error/partial states needed for the demo.
+- [x] **7. Build the React/Vite franchise operations console**
+  Implemented Overview, Changes, Drift and Locations; explicit observed-state/no-baseline UX; conversational clarification; structured-config inspection; compact blast-radius plan summary; protected approval/apply controls; truthful resource-apply then location-verification progress; partial/non-converged remediation; drift/override entry points; and runtime-only operator access. The console supports real API mode via `VITE_API_BASE_URL` and a clearly labeled deterministic local demo mode for checkpoint review. Frontend build/tests plus the full Go/Python/API suite pass on Windows and Ubuntu.
 
-### CHECKPOINT 2 — Local product works
-Stop and review the locally running console: natural-language request → clarification → structured config → saved plan → hash-bound approval → apply → verification/convergence, plus one drift/remediation path.
+### CHECKPOINT 2 — Local product works ⏳ REVIEW
+Stop and review the locally running console: natural-language request → clarification → structured config → saved plan → hash-bound approval → apply → verification/convergence, plus one drift/remediation path. Code and automated verification are complete; manual operator review is the remaining checkpoint gate.
 
 - [ ] **8. Package and deploy the Strands runtime to Amazon Bedrock AgentCore**
   Spec ref: `spec.md > Deployment`, `spec.md > Architecture`, and `deploy/agentcore/Dockerfile`
