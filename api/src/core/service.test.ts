@@ -190,10 +190,20 @@ async function seedPlan(
       overrides: [],
     };
     plan.revision_id = revision.revision_id;
-    await fx.metadata.put("revision", revision.revision_id, revision.organization_id, revision as unknown as Record<string, unknown>);
+    await fx.metadata.put(
+      "revision",
+      revision.revision_id,
+      revision.organization_id,
+      revision as unknown as Record<string, unknown>,
+    );
   }
 
-  await fx.metadata.put("plan", plan.plan_id, plan.organization_id, plan as unknown as Record<string, unknown>);
+  await fx.metadata.put(
+    "plan",
+    plan.plan_id,
+    plan.organization_id,
+    plan as unknown as Record<string, unknown>,
+  );
   return plan;
 }
 
@@ -222,9 +232,7 @@ test("approval binds exact bytes, creates a revision, and promotes desired confi
       "organizations/demo-franchise/desired-revisions/rev_000001/taxes.yaml",
     ),
   );
-  assert.ok(
-    fx.artifacts.objects.has("organizations/demo-franchise/workspace/taxes.yaml"),
-  );
+  assert.ok(fx.artifacts.objects.has("organizations/demo-franchise/workspace/taxes.yaml"));
 
   const estate = await fx.service.estate();
   assert.equal(estate.has_desired_state, true);
@@ -251,7 +259,7 @@ test("changed plan bytes are refused before approval or apply", async () => {
     () => fx.service.approvePlan(plan.plan_id, plan.plan_hash, "dan@example.com"),
     (error: unknown) => error instanceof ApiError && error.statusCode === 409,
   );
-  assert.equal((await fx.metadata.list("revision")).length, 0);
+  assert.equal((await fx.metadata.list("demo-franchise", "revision")).length, 0);
 });
 
 test("approved plan without desired-state revision cannot be applied", async () => {
@@ -283,7 +291,12 @@ test("outcome uncertain rollout cannot be retried blindly", async () => {
     created_at: "2026-09-02T19:00:00Z",
     updated_at: "2026-09-02T19:00:00Z",
   };
-  await fx.metadata.put("rollout", rollout.rollout_id, rollout.organization_id, rollout as unknown as Record<string, unknown>);
+  await fx.metadata.put(
+    "rollout",
+    rollout.rollout_id,
+    rollout.organization_id,
+    rollout as unknown as Record<string, unknown>,
+  );
 
   await assert.rejects(
     () => fx.service.retryRollout(rollout.rollout_id),
@@ -362,7 +375,13 @@ function event(
       apiId: "test",
       domainName: "test",
       domainPrefix: "test",
-      http: { method, path: rawPath, protocol: "HTTP/1.1", sourceIp: "127.0.0.1", userAgent: "test" },
+      http: {
+        method,
+        path: rawPath,
+        protocol: "HTTP/1.1",
+        sourceIp: "127.0.0.1",
+        userAgent: "test",
+      },
       requestId: "request",
       routeKey: "$default",
       stage: "$default",
