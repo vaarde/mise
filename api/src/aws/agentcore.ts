@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -24,11 +24,17 @@ export class AwsAgentCoreInvoker implements AgentInvoker {
     prompt: string;
     sessionId: string;
   }): Promise<unknown> {
-    return invokeJson(this.client, this.runtimeArn, input.sessionId || randomUUID(), this.qualifier, {
-      mode: "message",
-      organization_id: input.organizationId,
-      prompt: input.prompt,
-    });
+    return invokeJson(
+      this.client,
+      this.runtimeArn,
+      agentCoreSessionId("chat", input.sessionId || randomUUID()),
+      this.qualifier,
+      {
+        mode: "message",
+        organization_id: input.organizationId,
+        prompt: input.prompt,
+      },
+    );
   }
 }
 
@@ -43,7 +49,7 @@ export class AwsAgentCoreApplyRuntime implements ApplyRuntime {
     const response = await invokeJson(
       this.client,
       this.runtimeArn,
-      `apply-${job.rollout_id}`,
+      agentCoreSessionId("apply", job.rollout_id),
       this.qualifier,
       {
         mode: "apply_approved_plan",
@@ -84,6 +90,17 @@ export class AwsLambdaApplyDispatcher implements ApplyDispatcher {
       throw new Error(`apply worker dispatch returned ${response.StatusCode}`);
     }
   }
+}
+
+/**
+ * AgentCore runtime session IDs must be at least 33 characters. External
+ * conversation and rollout IDs are deliberately kept separate from that
+ * platform constraint. Hashing gives us a valid, stable ID so clarification
+ * turns stay in one session and Lambda retries reuse the same apply session.
+ */
+export function agentCoreSessionId(scope: "chat" | "apply", externalId: string): string {
+  const digest = createHash("sha256").update(`${scope}:${externalId}`).digest("hex");
+  return `mise-${scope}-${digest.slice(0, 48)}`;
 }
 
 async function invokeJson(
