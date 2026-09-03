@@ -2,23 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import io
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from mise_agent import runtime_app
 from mise_agent.models import ProposalResult
 from mise_agent.runtime import (
     AgentCoreRuntime,
     RuntimeProtocolError,
     RuntimeSession,
     RuntimeSettings,
-    SquareTokenProvider,
     extract_access_token,
 )
-from mise_agent import runtime_app
 from mise_cli.contracts import ApplyResult, VerifyEvent
 
 
@@ -192,7 +190,7 @@ def test_estate_summary_is_read_only(tmp_path: Path) -> None:
     )
     result = runtime.invoke({"mode": "estate_summary", "organization_id": "demo"})
     assert result["status"] == "ok"
-    assert result["estate"]["count"] == 1
+    assert result["estate"]["location_count"] == 1
     assert persistence.synced == []
 
 
