@@ -14,10 +14,10 @@ export function lifecycleStage(
 }
 
 export const lifecycleStages: Array<{ key: LifecycleStage; label: string }> = [
-  { key: "draft", label: "Draft" },
-  { key: "planned", label: "Planned" },
+  { key: "draft", label: "Request" },
+  { key: "planned", label: "Ready to review" },
   { key: "approved", label: "Approved" },
-  { key: "applying", label: "Applying" },
-  { key: "verifying", label: "Verifying" },
-  { key: "converged", label: "Converged" },
+  { key: "applying", label: "Updating" },
+  { key: "verifying", label: "Checking" },
+  { key: "converged", label: "Done" },
 ];
