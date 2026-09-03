@@ -82,6 +82,10 @@ Resources:
                   - ecr:BatchGetImage
                   - ecr:GetDownloadUrlForLayer
                 Resource: !GetAtt RuntimeRepository.Arn
+              - Sid: ECRTokenAccess
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
               - Sid: RuntimeLogGroups
                 Effect: Allow
                 Action:
