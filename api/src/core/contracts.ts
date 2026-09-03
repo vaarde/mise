@@ -21,6 +21,7 @@ export interface PlanRecord {
   entity_type?: string;
   plan_id: string;
   organization_id: string;
+  title?: string;
   plan_hash: string;
   status: PlanStatus;
   artifact_s3_key: string;
@@ -37,6 +38,20 @@ export interface ApprovalRecord {
   plan_hash: string;
   approved_at: string;
   approved_by: string;
+}
+
+export interface RevisionRecord {
+  revision_id: string;
+  organization_id: string;
+  revision_number: number;
+  title: string;
+  display_name: string;
+  created_at: string;
+  approved_by: string;
+  plan_id: string;
+  plan_hash: string;
+  artifact_s3_key: string;
+  overrides: string[];
 }
 
 export interface RolloutRecord {
@@ -131,6 +146,7 @@ export interface ApplyRuntime {
 
 export interface ArtifactStore {
   getBytes(key: string): Promise<Uint8Array>;
+  copyPrefix(sourcePrefix: string, destinationPrefix: string): Promise<string[]>;
 }
 
 export interface MetadataStore {
@@ -148,6 +164,7 @@ export interface MetadataStore {
     entityId: string,
     changes: Record<string, unknown>,
   ): Promise<T>;
+  allocateRevisionNumber(organizationId: string): Promise<number>;
   appendRolloutEvent(event: RolloutEvent): Promise<void>;
   listRolloutEvents(
     organizationId: string,
