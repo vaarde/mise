@@ -220,6 +220,7 @@ class AgentCoreRuntime:
             PlanMetadata(
                 plan_id=result.plan_id,
                 organization_id=invocation.organization_id,
+                title=result.title or "",
                 plan_hash=result.plan_hash,
                 status="ready_for_review",
                 artifact_s3_key=plan_key,
@@ -252,8 +253,14 @@ class AgentCoreRuntime:
         }
 
     def _apply(self, invocation: ApplyInvocation) -> dict[str, Any]:
-        # The API worker uses a distinct AgentCore runtimeSessionId for each
-        # rollout, so refresh to the latest durable active workspace first.
+        # Do not trust the invocation's mode name as proof of approval. Re-read
+        # cloud governance state inside AgentCore so direct AWS invocations
+        # cannot bypass the browser/API approval boundary.
+        self._require_current_approved_plan(invocation)
+
+        # Approval has already promoted reviewed config into workspace/. Hydrate
+        # that current desired workspace and let the Go plan provenance check its
+        # config digest and pre-apply state serial.
         session = self._session(invocation.organization_id, refresh=True)
         plan_bytes = read_organization_bytes(
             self.persistence.workspace,
@@ -265,16 +272,6 @@ class AgentCoreRuntime:
             raise RuntimeProtocolError(
                 f"approved plan hash mismatch: expected {invocation.plan_hash}, got {actual_hash}"
             )
-
-        # Approval establishes desired state. Overlay the exact draft config
-        # belonging to this plan only now, immediately before deterministic
-        # apply. The Go plan provenance then checks this config digest/state.
-        overlay_draft_config(
-            self.persistence.workspace,
-            invocation.organization_id,
-            invocation.plan_id,
-            session.workspace,
-        )
 
         runtime_plan = (
             session.workspace
@@ -313,6 +310,37 @@ class AgentCoreRuntime:
             ),
             "verify_events": verify_events,
         }
+
+    def _require_current_approved_plan(self, invocation: ApplyInvocation) -> None:
+        plan = self.persistence.metadata.get(
+            invocation.organization_id, "plan", invocation.plan_id
+        )
+        if plan is None:
+            raise RuntimeProtocolError(f"unknown governed plan: {invocation.plan_id}")
+        if plan.get("status") not in {"approved", "applied"}:
+            raise RuntimeProtocolError("plan is not approved for execution")
+        if plan.get("plan_hash") != invocation.plan_hash:
+            raise RuntimeProtocolError("invocation hash does not match approved plan metadata")
+        if plan.get("artifact_s3_key") != invocation.plan_s3_key:
+            raise RuntimeProtocolError("invocation artifact key does not match approved plan metadata")
+
+        revision_id = str(plan.get("revision_id") or "")
+        if not revision_id:
+            raise RuntimeProtocolError("approved plan is missing its desired-state revision")
+        revision = self.persistence.metadata.get(
+            invocation.organization_id, "revision", revision_id
+        )
+        if revision is None:
+            raise RuntimeProtocolError("desired-state revision metadata is missing")
+        if revision.get("plan_id") != invocation.plan_id or revision.get("plan_hash") != invocation.plan_hash:
+            raise RuntimeProtocolError("desired-state revision is not bound to this exact plan")
+
+        revisions = self.persistence.metadata.list(invocation.organization_id, "revision")
+        if not revisions:
+            raise RuntimeProtocolError("organization has no desired-state revision")
+        current = max(revisions, key=lambda item: int(item.get("revision_number", 0)))
+        if current.get("revision_id") != revision_id:
+            raise RuntimeProtocolError("a newer desired-state revision has replaced this plan")
 
     def _session(self, organization_id: str, *, refresh: bool = False) -> RuntimeSession:
         organization_id = safe_segment(organization_id)
@@ -435,29 +463,6 @@ def draft_config_prefix(
         f"{store.organization_prefix(organization_id)}/plans/"
         f"{safe_segment(plan_id)}/draft-config/"
     )
-
-
-def overlay_draft_config(
-    store: S3WorkspaceStore,
-    organization_id: str,
-    plan_id: str,
-    workspace: Path,
-) -> list[str]:
-    prefix = draft_config_prefix(store, organization_id, plan_id)
-    overlaid: list[str] = []
-    for key in store._list_keys(prefix):
-        relative = key.removeprefix(prefix)
-        if not relative:
-            continue
-        relative = safe_relative(relative)
-        if relative.startswith(".mise/"):
-            raise RuntimeProtocolError("draft config may not write under .mise")
-        target = confined_workspace_path(workspace, relative)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        response = store.s3.get_object(Bucket=store.bucket, Key=key)
-        target.write_bytes(response["Body"].read())
-        overlaid.append(relative)
-    return sorted(overlaid)
 
 
 def restore_active_config(
