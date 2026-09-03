@@ -9,11 +9,11 @@ import uuid
 import boto3
 
 
-FLAGSHIP_REQUEST = (
-    "Roll out the fall lunch menu across all locations. In Iowa, update the local tax "
-    "configuration, but preserve airport-location exceptions."
+DEFAULT_PLAN_REQUEST = (
+    "At Mise Test - Nashville, update the Nashville City Tax. "
+    "I have not given you the new rate yet. Do not apply anything."
 )
-CLARIFICATION = "Use 6.5% for the Iowa local tax and apply it immediately."
+DEFAULT_CLARIFICATION = "Set the Nashville City Tax to 2.75% and make it effective now."
 
 
 def invoke(client, runtime_arn: str, session_id: str, payload: dict) -> dict:
@@ -40,6 +40,16 @@ def main() -> int:
         default=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-2",
     )
     parser.add_argument("--skip-plan", action="store_true", help="run only the read-only estate check")
+    parser.add_argument(
+        "--plan-request",
+        default=DEFAULT_PLAN_REQUEST,
+        help="proposal-only natural-language request; defaults to the real Nashville sandbox fixture",
+    )
+    parser.add_argument(
+        "--clarification",
+        default=DEFAULT_CLARIFICATION,
+        help="answer to the expected missing-detail clarification",
+    )
     args = parser.parse_args()
 
     client = boto3.client("bedrock-agentcore", region_name=args.region)
@@ -66,13 +76,13 @@ def main() -> int:
         {
             "mode": "message",
             "organization_id": args.organization_id,
-            "prompt": FLAGSHIP_REQUEST,
+            "prompt": args.plan_request,
         },
     )
     print("\n=== First request ===")
     print(json.dumps(first, indent=2))
     if first.get("status") != "needs_clarification":
-        raise RuntimeError("flagship request should stop for the missing Iowa rate/effective time")
+        raise RuntimeError("proposal request should stop for the missing material value")
 
     second = invoke(
         client,
@@ -81,7 +91,7 @@ def main() -> int:
         {
             "mode": "message",
             "organization_id": args.organization_id,
-            "prompt": CLARIFICATION,
+            "prompt": args.clarification,
         },
     )
     print("\n=== Clarified plan ===")
@@ -93,7 +103,7 @@ def main() -> int:
         raise RuntimeError("planned response is missing plan_id/plan_hash")
 
     print("\nSmoke test passed: read-only estate query and governed plan generation succeeded.")
-    print("No POS write was requested by this smoke test.")
+    print("No POS write or approval was requested by this smoke test.")
     return 0
 
 
