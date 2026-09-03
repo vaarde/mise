@@ -93,6 +93,7 @@ class MiseOperationsAgent:
         return ProposalResult(
             status="planned",
             interpretation=analysis.intent.interpretation,
+            title=analysis.intent.title,
             target_location_ids=rendered.target_location_ids,
             changed_files=rendered.changed_files,
             plan_path=Path(governed.artifact_path).as_posix(),
