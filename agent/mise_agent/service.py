@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -34,11 +35,15 @@ class AgentCallable(Protocol):
 
 
 def create_strands_agent(context: ToolContext) -> Agent:
-    return Agent(
-        system_prompt=SYSTEM_PROMPT,
-        tools=build_read_tools(context),
-        callback_handler=None,
-    )
+    kwargs: dict[str, Any] = {
+        "system_prompt": SYSTEM_PROMPT,
+        "tools": build_read_tools(context),
+        "callback_handler": None,
+    }
+    model_id = os.getenv("MISE_BEDROCK_MODEL_ID", "").strip()
+    if model_id:
+        kwargs["model"] = model_id
+    return Agent(**kwargs)
 
 
 class MiseOperationsAgent:
