@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 import boto3
+from botocore.exceptions import ClientError
 from pydantic import BaseModel, ConfigDict
 
 from mise_cli.runner import MiseRunner
@@ -20,6 +21,7 @@ from .cloud_persistence import (
     OrganizationMutationLock,
     PlanMetadata,
     S3WorkspaceStore,
+    safe_relative,
     safe_segment,
     utc_now,
 )
@@ -201,9 +203,19 @@ class AgentCoreRuntime:
             result.changed_files,
         )
 
-        # Keep the exact planning workspace durable. S3WorkspaceStore excludes
-        # credentials and locks, so only trusted config/state artifacts persist.
-        self.persistence.sync(invocation.organization_id, session.workspace)
+        # Planning is a proposal, not desired state. Restore the session's
+        # active config from S3 after capturing the draft so rejected plans do
+        # not leak into the next request or the durable workspace.
+        restore_active_config(
+            self.persistence.workspace,
+            invocation.organization_id,
+            session.workspace,
+            result.changed_files,
+        )
+
+        summary = dict((result.plan or {}).get("summary", {}))
+        if result.title:
+            summary["change_title"] = result.title
         self.persistence.metadata.put_plan(
             PlanMetadata(
                 plan_id=result.plan_id,
@@ -212,7 +224,7 @@ class AgentCoreRuntime:
                 status="ready_for_review",
                 artifact_s3_key=plan_key,
                 draft_config_s3_key=draft_prefix,
-                summary=(result.plan or {}).get("summary", {}),
+                summary=summary,
                 created_at=utc_now(),
             )
         )
@@ -241,7 +253,7 @@ class AgentCoreRuntime:
 
     def _apply(self, invocation: ApplyInvocation) -> dict[str, Any]:
         # The API worker uses a distinct AgentCore runtimeSessionId for each
-        # rollout, so refresh to the latest durable workspace before writing.
+        # rollout, so refresh to the latest durable active workspace first.
         session = self._session(invocation.organization_id, refresh=True)
         plan_bytes = read_organization_bytes(
             self.persistence.workspace,
@@ -253,6 +265,16 @@ class AgentCoreRuntime:
             raise RuntimeProtocolError(
                 f"approved plan hash mismatch: expected {invocation.plan_hash}, got {actual_hash}"
             )
+
+        # Approval establishes desired state. Overlay the exact draft config
+        # belonging to this plan only now, immediately before deterministic
+        # apply. The Go plan provenance then checks this config digest/state.
+        overlay_draft_config(
+            self.persistence.workspace,
+            invocation.organization_id,
+            invocation.plan_id,
+            session.workspace,
+        )
 
         runtime_plan = (
             session.workspace
@@ -278,8 +300,9 @@ class AgentCoreRuntime:
                     for event in session.runner.verify(runtime_plan)
                 ]
         finally:
-            # Mise checkpoints state during apply. Persist those checkpoints
-            # even after partial or uncertain provider outcomes.
+            # The runtime copy of the plan is transient. Persist desired config
+            # and Mise's checkpointed state, but not this execution scratch file.
+            runtime_plan.unlink(missing_ok=True)
             self.persistence.sync(invocation.organization_id, session.workspace)
 
         if apply_result is None:
@@ -343,12 +366,10 @@ class AgentCoreRuntime:
         keys = self.persistence.workspace.put_draft_config(
             organization_id, plan_id, staging
         )
+        shutil.rmtree(staging, ignore_errors=True)
         if not keys:
             return None
-        return (
-            f"{self.persistence.workspace.organization_prefix(organization_id)}/"
-            f"plans/{safe_segment(plan_id)}/draft-config/"
-        )
+        return draft_config_prefix(self.persistence.workspace, organization_id, plan_id)
 
 
 def default_service_factory(
@@ -405,6 +426,63 @@ def read_organization_bytes(
         raise RuntimeProtocolError("plan artifact does not belong to this organization")
     response = store.s3.get_object(Bucket=store.bucket, Key=key)
     return response["Body"].read()
+
+
+def draft_config_prefix(
+    store: S3WorkspaceStore, organization_id: str, plan_id: str
+) -> str:
+    return (
+        f"{store.organization_prefix(organization_id)}/plans/"
+        f"{safe_segment(plan_id)}/draft-config/"
+    )
+
+
+def overlay_draft_config(
+    store: S3WorkspaceStore,
+    organization_id: str,
+    plan_id: str,
+    workspace: Path,
+) -> list[str]:
+    prefix = draft_config_prefix(store, organization_id, plan_id)
+    overlaid: list[str] = []
+    for key in store._list_keys(prefix):
+        relative = key.removeprefix(prefix)
+        if not relative:
+            continue
+        relative = safe_relative(relative)
+        if relative.startswith(".mise/"):
+            raise RuntimeProtocolError("draft config may not write under .mise")
+        target = confined_workspace_path(workspace, relative)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        response = store.s3.get_object(Bucket=store.bucket, Key=key)
+        target.write_bytes(response["Body"].read())
+        overlaid.append(relative)
+    return sorted(overlaid)
+
+
+def restore_active_config(
+    store: S3WorkspaceStore,
+    organization_id: str,
+    workspace: Path,
+    changed_files: list[str],
+) -> None:
+    prefix = store.workspace_prefix(organization_id)
+    for raw_relative in changed_files:
+        relative = safe_relative(raw_relative)
+        if relative.startswith(".mise/"):
+            raise RuntimeProtocolError("generated config may not write under .mise")
+        target = confined_workspace_path(workspace, relative)
+        key = prefix + relative
+        try:
+            response = store.s3.get_object(Bucket=store.bucket, Key=key)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in {"NoSuchKey", "404", "NotFound"}:
+                raise
+            target.unlink(missing_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(response["Body"].read())
 
 
 def confined_workspace_path(root: Path, relative: str | Path) -> Path:
