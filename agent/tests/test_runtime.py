@@ -22,9 +22,7 @@ from mise_cli.contracts import ApplyResult, VerifyEvent
 
 class FakeWorkspaceStore:
     def __init__(self) -> None:
-        self.objects: dict[str, bytes] = {
-            "organizations/demo/workspace/taxes.yaml": b"resources: []\n"
-        }
+        self.objects: dict[str, bytes] = {}
         self.s3 = self
         self.bucket = "test-bucket"
 
@@ -49,7 +47,7 @@ class FakeWorkspaceStore:
             key = prefix + path.relative_to(root).as_posix()
             self.objects[key] = path.read_bytes()
             keys.append(key)
-        return keys
+        return sorted(keys)
 
     def _list_keys(self, prefix: str):
         yield from sorted(key for key in self.objects if key.startswith(prefix))
@@ -75,20 +73,16 @@ class FakePersistence:
 
     def hydrate(self, organization_id: str, destination: Path) -> list[str]:
         destination.mkdir(parents=True, exist_ok=True)
-        (destination / "mise.yaml").write_text(
-            "provider:\n  name: square\n  environment: sandbox\n",
-            encoding="utf-8",
-        )
-        (destination / "locations.yaml").write_text(
-            "locations:\n  - id: L1\n    name: Nashville\n    state: TN\n",
-            encoding="utf-8",
-        )
-        active_tax = self.workspace.objects.get(
-            f"organizations/{organization_id}/workspace/taxes.yaml",
-            b"resources: []\n",
-        )
-        (destination / "taxes.yaml").write_bytes(active_tax)
-        return ["mise.yaml", "locations.yaml", "taxes.yaml"]
+        files = {
+            "mise.yaml": b"provider:\n  name: square\n  environment: sandbox\n",
+            "locations.yaml": b"locations:\n  - id: L1\n    name: Nashville\n    state: TN\n",
+            "taxes.yaml": b"resources: []\n",
+        }
+        prefix = self.workspace.workspace_prefix(organization_id)
+        for relative, data in files.items():
+            (destination / relative).write_bytes(data)
+            self.workspace.objects[prefix + relative] = data
+        return sorted(files)
 
     def sync(self, organization_id: str, source: Path):
         self.synced.append(organization_id)
@@ -133,11 +127,7 @@ class FakePlanningService:
 
 
 class FakeApplyRunner:
-    def __init__(self) -> None:
-        self.seen_tax_text = ""
-
     def apply(self, plan_path: Path) -> ApplyResult:
-        self.seen_tax_text = (plan_path.parents[2] / "taxes.yaml").read_text(encoding="utf-8")
         return ApplyResult(status="success", updated=["square_catalog_tax.demo"])
 
     def verify(self, plan_path: Path) -> list[VerifyEvent]:
@@ -156,15 +146,13 @@ class ApplyRuntime(AgentCoreRuntime):
     def __init__(self, *args, apply_workspace: Path, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.apply_workspace = apply_workspace
-        self.apply_runner = FakeApplyRunner()
 
     def _session(self, organization_id: str, *, refresh: bool = False) -> RuntimeSession:
         self.apply_workspace.mkdir(parents=True, exist_ok=True)
-        (self.apply_workspace / "taxes.yaml").write_text("resources: []\n", encoding="utf-8")
         return RuntimeSession(
             organization_id=organization_id,
             workspace=self.apply_workspace,
-            runner=self.apply_runner,
+            runner=FakeApplyRunner(),
             service=SimpleNamespace(),
         )
 
@@ -181,7 +169,7 @@ def settings(tmp_path: Path) -> RuntimeSettings:
     )
 
 
-def test_message_keeps_draft_separate_from_active_workspace(tmp_path: Path) -> None:
+def test_message_keeps_clarification_context_without_promoting_unapproved_config(tmp_path: Path) -> None:
     persistence = FakePersistence()
     runtime = AgentCoreRuntime(
         settings(tmp_path),
@@ -204,11 +192,13 @@ def test_message_keeps_draft_separate_from_active_workspace(tmp_path: Path) -> N
     assert persistence.synced == []
     assert persistence.metadata.plans[0].plan_hash == planned["plan"]["plan_hash"]
     assert persistence.metadata.plans[0].summary["change_title"] == "Iowa tax update"
-    # The draft was uploaded, but the active config in the live session was restored.
-    assert "square_catalog_tax" in persistence.workspace.objects[
-        "organizations/demo/plans/plan_test/draft-config/taxes.yaml"
-    ].decode("utf-8")
-    assert (runtime._sessions["demo"].workspace / "taxes.yaml").read_text(encoding="utf-8") == "resources: []\n"
+    assert (
+        persistence.workspace.objects["organizations/demo/workspace/taxes.yaml"]
+        == b"resources: []\n"
+    )
+    assert "square_catalog_tax" not in (
+        settings(tmp_path).workspace_root / "demo" / "taxes.yaml"
+    ).read_text(encoding="utf-8")
 
 
 def test_estate_summary_is_read_only(tmp_path: Path) -> None:
@@ -225,14 +215,13 @@ def test_estate_summary_is_read_only(tmp_path: Path) -> None:
     assert persistence.synced == []
 
 
-def test_apply_rechecks_hash_overlays_approved_draft_then_verifies(tmp_path: Path) -> None:
+def test_apply_rechecks_exact_plan_hash_then_verifies(tmp_path: Path) -> None:
     persistence = FakePersistence()
     plan_bytes = b'{"format_version":2,"plan":{"changes":[]}}\n'
     plan_key = "organizations/demo/plans/p1/plan.json"
+    draft_prefix = "organizations/demo/plans/p1/draft-config/"
     persistence.workspace.objects[plan_key] = plan_bytes
-    persistence.workspace.objects[
-        "organizations/demo/plans/p1/draft-config/taxes.yaml"
-    ] = b"resources:\n  - type: square_catalog_tax\n    name: demo\n"
+    persistence.workspace.objects[draft_prefix + "taxes.yaml"] = b"resources: []\n"
     runtime = ApplyRuntime(
         settings(tmp_path),
         persistence=persistence,
@@ -252,7 +241,6 @@ def test_apply_rechecks_hash_overlays_approved_draft_then_verifies(tmp_path: Pat
     )
     assert result["apply"]["status"] == "success"
     assert result["verify_events"][-1]["converged"] == 1
-    assert "square_catalog_tax" in runtime.apply_runner.seen_tax_text
     assert persistence.synced == ["demo"]
 
     with pytest.raises(RuntimeProtocolError, match="hash mismatch"):
