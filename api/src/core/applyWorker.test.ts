@@ -42,6 +42,9 @@ class MemoryMetadata implements MetadataStore {
     this.items.set(itemKey, updated);
     return updated as T;
   }
+  async allocateRevisionNumber(): Promise<number> {
+    return 1;
+  }
   async appendRolloutEvent(event: RolloutEvent): Promise<void> {
     this.events.push(structuredClone(event));
   }
@@ -100,7 +103,12 @@ async function fixture(result: ApplyRuntimeResult) {
     created_at: "2026-09-02T19:00:00Z",
     updated_at: "2026-09-02T19:00:00Z",
   };
-  await metadata.put("rollout", rollout.rollout_id, rollout.organization_id, rollout as unknown as Record<string, unknown>);
+  await metadata.put(
+    "rollout",
+    rollout.rollout_id,
+    rollout.organization_id,
+    rollout as unknown as Record<string, unknown>,
+  );
   let tick = 0;
   return {
     metadata,
@@ -115,8 +123,18 @@ test("successful apply progresses through real verification and converges", asyn
   const deps = await fixture({
     apply: { status: "success", created: [], updated: ["tax.nashville"], failed: [] },
     verify_events: [
-      { type: "verify_progress", verified: 1, total: 2, location: { location_id: "L1", converged: true } },
-      { type: "verify_progress", verified: 2, total: 2, location: { location_id: "L2", converged: true } },
+      {
+        type: "verify_progress",
+        verified: 1,
+        total: 2,
+        location: { location_id: "L1", converged: true },
+      },
+      {
+        type: "verify_progress",
+        verified: 2,
+        total: 2,
+        location: { location_id: "L2", converged: true },
+      },
       { type: "verify_complete", verified: 2, total: 2, converged: 2, non_converged: 0 },
     ],
   });
@@ -146,7 +164,12 @@ test("non-converged location yields partial rollout instead of false success", a
   const deps = await fixture({
     apply: { status: "success", created: [], updated: ["tax.nashville"], failed: [] },
     verify_events: [
-      { type: "verify_progress", verified: 1, total: 1, location: { location_id: "L1", converged: false } },
+      {
+        type: "verify_progress",
+        verified: 1,
+        total: 1,
+        location: { location_id: "L1", converged: false },
+      },
       { type: "verify_complete", verified: 1, total: 1, converged: 0, non_converged: 1 },
     ],
   });
