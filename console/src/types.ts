@@ -88,7 +88,7 @@ export interface DriftRecord {
   actual: string;
   rationale: string;
   impact: "financial" | "operational" | "low";
-  status: "open" | "remediating" | "accepted_override" | "resolved";
+  status: "open" | "remediating" | "policy_change_proposed" | "accepted_override" | "resolved";
 }
 
 export interface AgentTurn {
