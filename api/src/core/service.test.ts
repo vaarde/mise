@@ -11,6 +11,7 @@ import type {
   MetadataStore,
   MutationLock,
   PlanRecord,
+  RevisionRecord,
   RolloutEvent,
   RolloutRecord,
 } from "./contracts.js";
@@ -19,15 +20,16 @@ import { ApiError, formatSse, MiseApiService } from "./service.js";
 class MemoryMetadata implements MetadataStore {
   readonly items = new Map<string, Record<string, unknown>>();
   readonly events: RolloutEvent[] = [];
+  private revisionNumber = 0;
 
   async get<T>(organizationId: string, entityType: string, entityId: string): Promise<T | null> {
     return (this.items.get(key(organizationId, entityType, entityId)) as T | undefined) ?? null;
   }
 
   async list<T>(organizationId: string, entityType: string): Promise<T[]> {
-    const prefix = `${organizationId}:${entityType}:`;
+    const itemPrefix = `${organizationId}:${entityType}:`;
     return [...this.items.entries()]
-      .filter(([itemKey]) => itemKey.startsWith(prefix))
+      .filter(([itemKey]) => itemKey.startsWith(itemPrefix))
       .map(([, value]) => value as T);
   }
 
@@ -54,6 +56,11 @@ class MemoryMetadata implements MetadataStore {
     return updated as T;
   }
 
+  async allocateRevisionNumber(_organizationId: string): Promise<number> {
+    this.revisionNumber += 1;
+    return this.revisionNumber;
+  }
+
   async appendRolloutEvent(event: RolloutEvent): Promise<void> {
     this.events.push(structuredClone(event));
   }
@@ -74,10 +81,24 @@ class MemoryMetadata implements MetadataStore {
 
 class MemoryArtifacts implements ArtifactStore {
   readonly objects = new Map<string, Uint8Array>();
+
   async getBytes(key: string): Promise<Uint8Array> {
     const value = this.objects.get(key);
     if (!value) throw new Error(`missing artifact ${key}`);
     return value;
+  }
+
+  async copyPrefix(sourcePrefix: string, destinationPrefix: string): Promise<string[]> {
+    const copied: string[] = [];
+    for (const [sourceKey, bytes] of [...this.objects.entries()]) {
+      if (!sourceKey.startsWith(sourcePrefix)) continue;
+      const relative = sourceKey.slice(sourcePrefix.length);
+      if (!relative) continue;
+      const destinationKey = destinationPrefix + relative;
+      this.objects.set(destinationKey, bytes.slice());
+      copied.push(destinationKey);
+    }
+    return copied.sort();
   }
 }
 
@@ -138,16 +159,40 @@ async function seedPlan(
 ) {
   const bytes = Buffer.from('{"format_version":2,"plan":{"changes":[]}}\n');
   const planHash = createHash("sha256").update(bytes).digest("hex");
-  fx.artifacts.objects.set("plans/plan_1.json", bytes);
+  const planKey = "organizations/demo-franchise/plans/plan_1/plan.json";
+  const draftPrefix = "organizations/demo-franchise/plans/plan_1/draft-config/";
+  fx.artifacts.objects.set(planKey, bytes);
+  fx.artifacts.objects.set(`${draftPrefix}taxes.yaml`, Buffer.from("resources: []\n"));
   const plan: PlanRecord = {
     plan_id: "plan_1",
     organization_id: "demo-franchise",
+    title: "Iowa Fall Menu & Tax Rollout",
     plan_hash: planHash,
     status,
-    artifact_s3_key: "plans/plan_1.json",
-    summary: { to_create: 0, to_update: 1 },
+    artifact_s3_key: planKey,
+    draft_config_s3_key: draftPrefix,
+    summary: { to_create: 0, to_update: 1, to_delete: 0 },
     created_at: "2026-09-02T19:00:00Z",
   };
+
+  if (status === "approved" || status === "applied") {
+    const revision: RevisionRecord = {
+      revision_id: "rev_000001",
+      organization_id: "demo-franchise",
+      revision_number: 1,
+      title: plan.title!,
+      display_name: `Revision 1 — ${plan.title}`,
+      created_at: "2026-09-02T19:05:00Z",
+      approved_by: "dan@example.com",
+      plan_id: plan.plan_id,
+      plan_hash: plan.plan_hash,
+      artifact_s3_key: "organizations/demo-franchise/desired-revisions/rev_000001/",
+      overrides: [],
+    };
+    plan.revision_id = revision.revision_id;
+    await fx.metadata.put("revision", revision.revision_id, revision.organization_id, revision as unknown as Record<string, unknown>);
+  }
+
   await fx.metadata.put("plan", plan.plan_id, plan.organization_id, plan as unknown as Record<string, unknown>);
   return plan;
 }
@@ -161,13 +206,29 @@ test("chat message cannot authorize or dispatch a write", async () => {
   assert.equal(fx.lock.acquired.length, 0);
 });
 
-test("approval binds to exact artifact bytes and apply queues one governed rollout", async () => {
+test("approval binds exact bytes, creates a revision, and promotes desired config", async () => {
   const fx = fixture();
   const plan = await seedPlan(fx);
 
   const approved = await fx.service.approvePlan(plan.plan_id, plan.plan_hash, "dan@example.com");
   assert.equal(approved.plan.status, "approved");
   assert.equal(approved.approval.plan_hash, plan.plan_hash);
+  assert.equal(approved.revision.revision_id, "rev_000001");
+  assert.equal(approved.revision.display_name, "Revision 1 — Iowa Fall Menu & Tax Rollout");
+  assert.equal(approved.plan.revision_id, approved.revision.revision_id);
+
+  assert.ok(
+    fx.artifacts.objects.has(
+      "organizations/demo-franchise/desired-revisions/rev_000001/taxes.yaml",
+    ),
+  );
+  assert.ok(
+    fx.artifacts.objects.has("organizations/demo-franchise/workspace/taxes.yaml"),
+  );
+
+  const estate = await fx.service.estate();
+  assert.equal(estate.has_desired_state, true);
+  assert.deepEqual(estate.desired_revision, approved.revision);
 
   const rollout = await fx.service.startApply(plan.plan_id);
   assert.equal(rollout.status, "queued");
@@ -178,6 +239,7 @@ test("approval binds to exact artifact bytes and apply queues one governed rollo
 
   const events = await fx.service.events(rollout.rollout_id);
   assert.equal(events[0]?.event_type, "rollout_queued");
+  assert.equal(events[0]?.data.revision_id, "rev_000001");
 });
 
 test("changed plan bytes are refused before approval or apply", async () => {
@@ -189,6 +251,18 @@ test("changed plan bytes are refused before approval or apply", async () => {
     () => fx.service.approvePlan(plan.plan_id, plan.plan_hash, "dan@example.com"),
     (error: unknown) => error instanceof ApiError && error.statusCode === 409,
   );
+  assert.equal((await fx.metadata.list("revision")).length, 0);
+});
+
+test("approved plan without desired-state revision cannot be applied", async () => {
+  const fx = fixture();
+  const plan = await seedPlan(fx);
+  await fx.metadata.update("demo-franchise", "plan", plan.plan_id, { status: "approved" });
+  await assert.rejects(
+    () => fx.service.startApply(plan.plan_id),
+    (error: unknown) => error instanceof ApiError && /no desired-state revision/.test(error.message),
+  );
+  assert.equal(fx.dispatcher.jobs.length, 0);
 });
 
 test("outcome uncertain rollout cannot be retried blindly", async () => {
@@ -263,6 +337,8 @@ test("HTTP mutation routes require demo access while public reads and chat do no
     ),
   );
   assert.equal(allowed.statusCode, 200);
+  const body = JSON.parse(allowed.body ?? "{}") as { revision?: RevisionRecord };
+  assert.equal(body.revision?.revision_id, "rev_000001");
 });
 
 function key(organizationId: string, entityType: string, entityId: string): string {
