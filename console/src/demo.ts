@@ -35,7 +35,7 @@ export const demoDrift: DriftRecord[] = [
     resource: "Iowa local tax",
     expected: "10.0% — approved airport exception",
     actual: "8.0%",
-    rationale: "Changed outside Mise after Revision 12.",
+    rationale: "Someone changed this in Square after the airport rate was approved at 10.0%.",
     impact: "financial",
     status: "open",
   },
@@ -45,7 +45,7 @@ export const demoDrift: DriftRecord[] = [
     resource: "Fall lunch menu",
     expected: "Fall lunch menu v3",
     actual: "Fall lunch menu v2",
-    rationale: "Location did not converge during the last rollout.",
+    rationale: "This location did not finish the last menu update.",
     impact: "operational",
     status: "remediating",
   },
@@ -71,7 +71,7 @@ export const demoPlan: PlanRecord = {
 
 export const demoProposedChange: ProposedChange = {
   interpretation:
-    "Roll out the fall lunch menu across 200 franchise locations, apply the Iowa tax change to Iowa locations, and preserve the five airport-location exceptions.",
+    "Update the fall lunch menu at all 200 locations. In Iowa, set the local tax to 6.5%, while leaving the five airport locations on their existing approved airport rates.",
   target_count: 200,
   states: 12,
   exception_count: 5,
@@ -125,9 +125,9 @@ export const initialDemoHistory: HistoryResponse = {
 };
 
 export const flagshipPrompt =
-  "Roll out the fall lunch menu across all 200 locations. In Iowa, update the local tax configuration, but preserve airport-location exceptions.";
+  "Roll out the fall lunch menu across all 200 locations. In Iowa, update the local tax, but leave the airport locations on their current airport rates.";
 
-export const clarificationAnswer = "Use 6.5% for the Iowa local tax and apply it immediately.";
+export const clarificationAnswer = "Use 6.5% for the Iowa local tax and start now.";
 
 export function cloneDemoEstate(): EstateResponse {
   return structuredClone(initialDemoEstate);
@@ -140,13 +140,13 @@ export function cloneDemoHistory(): HistoryResponse {
 export function rolloutPhaseLabel(rollout: RolloutRecord | null): string {
   if (!rollout) return "No rollout in progress";
   switch (rollout.status) {
-    case "queued": return "Queued";
-    case "applying": return `Applying configuration · ${rollout.changes_completed}/${rollout.changes_total}`;
-    case "verifying": return `Verifying convergence · ${rollout.locations_verified}/${rollout.locations_total}`;
-    case "converged": return `Converged · ${rollout.converged_count}/${rollout.locations_total}`;
-    case "partial": return `${rollout.converged_count}/${rollout.locations_total} converged · ${rollout.non_converged_count} need attention`;
-    case "outcome_uncertain": return "Outcome uncertain · verification required";
-    case "failed": return "Rollout failed";
+    case "queued": return "Ready to start";
+    case "applying": return `Updating settings · ${rollout.changes_completed}/${rollout.changes_total}`;
+    case "verifying": return `Checking locations · ${rollout.locations_verified}/${rollout.locations_total}`;
+    case "converged": return `All locations match · ${rollout.converged_count}/${rollout.locations_total}`;
+    case "partial": return `${rollout.converged_count}/${rollout.locations_total} match · ${rollout.non_converged_count} need attention`;
+    case "outcome_uncertain": return "Update status unclear · check before retrying";
+    case "failed": return "Rollout stopped";
   }
 }
 
