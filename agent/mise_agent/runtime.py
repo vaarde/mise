@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 import boto3
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from mise_cli.runner import MiseRunner
 
@@ -80,22 +80,22 @@ class RuntimeSettings:
             raise RuntimeConfigurationError("MISE_WORKSPACE_BUCKET is required")
         if not table:
             raise RuntimeConfigurationError("MISE_METADATA_TABLE is required")
-        executable = Path(os.getenv("MISE_EXECUTABLE", "/usr/local/bin/mise")).resolve()
-        root = Path(os.getenv("MISE_RUNTIME_WORKSPACE_ROOT", "/tmp/mise-runtime")).resolve()
-        secret_id = os.getenv("MISE_SQUARE_SECRET_ID", "").strip() or None
-        timeout = float(os.getenv("MISE_COMMAND_TIMEOUT_SECONDS", "120"))
         return cls(
             workspace_bucket=bucket,
             metadata_table=table,
-            square_secret_id=secret_id,
-            mise_executable=executable,
-            workspace_root=root,
-            mise_timeout_seconds=timeout,
+            square_secret_id=os.getenv("MISE_SQUARE_SECRET_ID", "").strip() or None,
+            mise_executable=Path(
+                os.getenv("MISE_EXECUTABLE", "/usr/local/bin/mise")
+            ).resolve(),
+            workspace_root=Path(
+                os.getenv("MISE_RUNTIME_WORKSPACE_ROOT", "/tmp/mise-runtime")
+            ).resolve(),
+            mise_timeout_seconds=float(os.getenv("MISE_COMMAND_TIMEOUT_SECONDS", "120")),
         )
 
 
 class SquareTokenProvider:
-    """Resolve the Square token without writing it into the persisted workspace."""
+    """Resolve a Square token without writing it into the persisted workspace."""
 
     def __init__(self, secret_id: str | None, *, secrets_client: Any | None = None) -> None:
         self.secret_id = secret_id
@@ -115,7 +115,6 @@ class SquareTokenProvider:
                 "Square credentials are unavailable; set MISE_SQUARE_SECRET_ID or MISE_SQUARE_ACCESS_TOKEN"
             )
         response = self.secrets.get_secret_value(SecretId=self.secret_id)
-        raw: str
         if response.get("SecretString") is not None:
             raw = str(response["SecretString"])
         elif response.get("SecretBinary") is not None:
@@ -125,9 +124,8 @@ class SquareTokenProvider:
             raw = bytes(binary).decode("utf-8")
         else:
             raise RuntimeConfigurationError("Square secret contains no value")
-        token = extract_access_token(raw)
-        self._cached = token
-        return token
+        self._cached = extract_access_token(raw)
+        return self._cached
 
 
 @dataclass
@@ -141,10 +139,9 @@ class RuntimeSession:
 class AgentCoreRuntime:
     """AgentCore-facing router around the governed Mise workflow.
 
-    AgentCore isolates runtime sessions at the microVM layer. Inside one runtime
-    session we keep a single MiseOperationsAgent per organization so Strands can
-    retain conversational context across clarification turns while the workspace
-    remains a normal file-oriented Mise workspace.
+    AgentCore isolates runtime sessions at the microVM layer. Within a session
+    the service instance is reused so Strands retains clarification context.
+    The Square token is supplied only through the Mise subprocess environment.
     """
 
     def __init__(
@@ -183,7 +180,8 @@ class AgentCoreRuntime:
         if result.status == "needs_clarification":
             return {
                 "status": "needs_clarification",
-                "message": result.clarification_question or "I need one more detail before I can prepare the change.",
+                "message": result.clarification_question
+                or "I need one more detail before I can prepare the change.",
                 "proposal": proposal,
             }
 
@@ -202,15 +200,14 @@ class AgentCoreRuntime:
             session.workspace,
             result.changed_files,
         )
-        # Keep the session's exact planning workspace durable. Credentials are
-        # excluded by S3WorkspaceStore; the Square token exists only in the
-        # subprocess environment.
+
+        # Keep the exact planning workspace durable. S3WorkspaceStore excludes
+        # credentials and locks, so only trusted config/state artifacts persist.
         self.persistence.sync(invocation.organization_id, session.workspace)
         self.persistence.metadata.put_plan(
             PlanMetadata(
                 plan_id=result.plan_id,
                 organization_id=invocation.organization_id,
-                title=session.service.governance.get_plan(result.plan_id).title,
                 plan_hash=result.plan_hash,
                 status="ready_for_review",
                 artifact_s3_key=plan_key,
@@ -221,7 +218,10 @@ class AgentCoreRuntime:
         )
         return {
             "status": "planned",
-            "message": f"{result.interpretation} I prepared the change for review. Nothing has been applied yet.",
+            "message": (
+                f"{result.interpretation} I prepared the change for review. "
+                "Nothing has been applied yet."
+            ),
             "proposal": proposal,
             "plan": {
                 "plan_id": result.plan_id,
@@ -240,11 +240,13 @@ class AgentCoreRuntime:
         }
 
     def _apply(self, invocation: ApplyInvocation) -> dict[str, Any]:
-        # Apply runs in its own AgentCore runtimeSessionId from the API worker,
-        # so this workspace is isolated from interactive chat sessions.
+        # The API worker uses a distinct AgentCore runtimeSessionId for each
+        # rollout, so refresh to the latest durable workspace before writing.
         session = self._session(invocation.organization_id, refresh=True)
-        plan_bytes = self.persistence.workspace.get_organization_bytes(
-            invocation.organization_id, invocation.plan_s3_key
+        plan_bytes = read_organization_bytes(
+            self.persistence.workspace,
+            invocation.organization_id,
+            invocation.plan_s3_key,
         )
         actual_hash = sha256_bytes(plan_bytes)
         if actual_hash != invocation.plan_hash:
@@ -252,7 +254,12 @@ class AgentCoreRuntime:
                 f"approved plan hash mismatch: expected {invocation.plan_hash}, got {actual_hash}"
             )
 
-        runtime_plan = session.workspace / ".mise" / "runtime" / f"{safe_segment(invocation.plan_id)}.json"
+        runtime_plan = (
+            session.workspace
+            / ".mise"
+            / "runtime"
+            / f"{safe_segment(invocation.plan_id)}.json"
+        )
         runtime_plan.parent.mkdir(parents=True, exist_ok=True)
         runtime_plan.write_bytes(plan_bytes)
 
@@ -260,14 +267,19 @@ class AgentCoreRuntime:
         verify_events: list[dict[str, Any]] = []
         try:
             apply_result = session.runner.apply(runtime_plan)
-            if apply_result.status in {"success", "partial", "outcome_uncertain", "no_changes"}:
+            if apply_result.status in {
+                "success",
+                "partial",
+                "outcome_uncertain",
+                "no_changes",
+            }:
                 verify_events = [
-                    event.model_dump(mode="json") for event in session.runner.verify(runtime_plan)
+                    event.model_dump(mode="json")
+                    for event in session.runner.verify(runtime_plan)
                 ]
         finally:
-            # Mise checkpoints state during apply; sync even when the provider
-            # response is partial or uncertain so the next invocation sees the
-            # exact deterministic state left by this attempt.
+            # Mise checkpoints state during apply. Persist those checkpoints
+            # even after partial or uncertain provider outcomes.
             self.persistence.sync(invocation.organization_id, session.workspace)
 
         if apply_result is None:
@@ -305,12 +317,7 @@ class AgentCoreRuntime:
             env={"MISE_SQUARE_ACCESS_TOKEN": self.token_provider.get()},
         )
         service = self.service_factory(workspace, runner, organization_id)
-        session = RuntimeSession(
-            organization_id=organization_id,
-            workspace=workspace,
-            runner=runner,
-            service=service,
-        )
+        session = RuntimeSession(organization_id, workspace, runner, service)
         self._sessions[organization_id] = session
         return session
 
@@ -356,16 +363,13 @@ def default_service_factory(
 
 def parse_invocation(payload: dict[str, Any]) -> Invocation:
     mode = payload.get("mode")
-    model: type[RuntimeModel]
     if mode == "message":
-        model = MessageInvocation
-    elif mode == "estate_summary":
-        model = EstateSummaryInvocation
-    elif mode == "apply_approved_plan":
-        model = ApplyInvocation
-    else:
-        raise RuntimeProtocolError(f"unknown invocation mode: {mode!r}")
-    return model.model_validate(payload)  # type: ignore[return-value]
+        return MessageInvocation.model_validate(payload)
+    if mode == "estate_summary":
+        return EstateSummaryInvocation.model_validate(payload)
+    if mode == "apply_approved_plan":
+        return ApplyInvocation.model_validate(payload)
+    raise RuntimeProtocolError(f"unknown invocation mode: {mode!r}")
 
 
 def extract_access_token(raw: str) -> str:
@@ -379,13 +383,28 @@ def extract_access_token(raw: str) -> str:
     if isinstance(parsed, str) and parsed.strip():
         return parsed.strip()
     if isinstance(parsed, dict):
-        for key in ("access_token", "token", "SQUARE_ACCESS_TOKEN", "MISE_SQUARE_ACCESS_TOKEN"):
+        for key in (
+            "access_token",
+            "token",
+            "SQUARE_ACCESS_TOKEN",
+            "MISE_SQUARE_ACCESS_TOKEN",
+        ):
             candidate = parsed.get(key)
             if isinstance(candidate, str) and candidate.strip():
                 return candidate.strip()
     raise RuntimeConfigurationError(
         "Square secret must be a token string or JSON containing access_token/token"
     )
+
+
+def read_organization_bytes(
+    store: S3WorkspaceStore, organization_id: str, key: str
+) -> bytes:
+    allowed_prefix = store.organization_prefix(organization_id) + "/"
+    if not key.startswith(allowed_prefix):
+        raise RuntimeProtocolError("plan artifact does not belong to this organization")
+    response = store.s3.get_object(Bucket=store.bucket, Key=key)
+    return response["Body"].read()
 
 
 def confined_workspace_path(root: Path, relative: str | Path) -> Path:
