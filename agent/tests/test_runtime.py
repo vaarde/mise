@@ -58,10 +58,26 @@ class FakeWorkspaceStore:
 
 class FakeMetadata:
     def __init__(self) -> None:
+        self.items: dict[tuple[str, str, str], dict] = {}
         self.plans = []
 
     def put_plan(self, record) -> None:
         self.plans.append(record)
+        self.items[(record.organization_id, "plan", record.plan_id)] = record.model_dump()
+
+    def put(self, organization_id: str, entity_type: str, entity_id: str, value: dict) -> None:
+        self.items[(organization_id, entity_type, entity_id)] = dict(value)
+
+    def get(self, organization_id: str, entity_type: str, entity_id: str):
+        item = self.items.get((organization_id, entity_type, entity_id))
+        return dict(item) if item is not None else None
+
+    def list(self, organization_id: str, entity_type: str):
+        return [
+            dict(value)
+            for (org, kind, _), value in self.items.items()
+            if org == organization_id and kind == entity_type
+        ]
 
 
 class FakePersistence:
@@ -169,6 +185,35 @@ def settings(tmp_path: Path) -> RuntimeSettings:
     )
 
 
+def approve_fixture(persistence: FakePersistence, plan_id: str, plan_hash: str, plan_key: str) -> None:
+    revision_id = "rev_000001"
+    persistence.metadata.put(
+        "demo",
+        "plan",
+        plan_id,
+        {
+            "plan_id": plan_id,
+            "organization_id": "demo",
+            "status": "approved",
+            "plan_hash": plan_hash,
+            "artifact_s3_key": plan_key,
+            "revision_id": revision_id,
+        },
+    )
+    persistence.metadata.put(
+        "demo",
+        "revision",
+        revision_id,
+        {
+            "revision_id": revision_id,
+            "revision_number": 1,
+            "organization_id": "demo",
+            "plan_id": plan_id,
+            "plan_hash": plan_hash,
+        },
+    )
+
+
 def test_message_keeps_clarification_context_without_promoting_unapproved_config(tmp_path: Path) -> None:
     persistence = FakePersistence()
     runtime = AgentCoreRuntime(
@@ -191,6 +236,7 @@ def test_message_keeps_clarification_context_without_promoting_unapproved_config
     assert planned["plan"]["artifact_s3_key"].endswith("/plan_test/plan.json")
     assert persistence.synced == []
     assert persistence.metadata.plans[0].plan_hash == planned["plan"]["plan_hash"]
+    assert persistence.metadata.plans[0].title == "Iowa tax update"
     assert persistence.metadata.plans[0].summary["change_title"] == "Iowa tax update"
     assert (
         persistence.workspace.objects["organizations/demo/workspace/taxes.yaml"]
@@ -215,20 +261,20 @@ def test_estate_summary_is_read_only(tmp_path: Path) -> None:
     assert persistence.synced == []
 
 
-def test_apply_rechecks_exact_plan_hash_then_verifies(tmp_path: Path) -> None:
+def test_apply_rechecks_cloud_approval_hash_then_verifies(tmp_path: Path) -> None:
     persistence = FakePersistence()
     plan_bytes = b'{"format_version":2,"plan":{"changes":[]}}\n'
     plan_key = "organizations/demo/plans/p1/plan.json"
-    draft_prefix = "organizations/demo/plans/p1/draft-config/"
     persistence.workspace.objects[plan_key] = plan_bytes
-    persistence.workspace.objects[draft_prefix + "taxes.yaml"] = b"resources: []\n"
+    digest = hashlib.sha256(plan_bytes).hexdigest()
+    approve_fixture(persistence, "p1", digest, plan_key)
+
     runtime = ApplyRuntime(
         settings(tmp_path),
         persistence=persistence,
         token_provider=FakeTokenProvider(),
         apply_workspace=tmp_path / "apply",
     )
-    digest = hashlib.sha256(plan_bytes).hexdigest()
     result = runtime.invoke(
         {
             "mode": "apply_approved_plan",
@@ -243,7 +289,7 @@ def test_apply_rechecks_exact_plan_hash_then_verifies(tmp_path: Path) -> None:
     assert result["verify_events"][-1]["converged"] == 1
     assert persistence.synced == ["demo"]
 
-    with pytest.raises(RuntimeProtocolError, match="hash mismatch"):
+    with pytest.raises(RuntimeProtocolError, match="invocation hash"):
         runtime.invoke(
             {
                 "mode": "apply_approved_plan",
@@ -256,8 +302,64 @@ def test_apply_rechecks_exact_plan_hash_then_verifies(tmp_path: Path) -> None:
         )
 
 
+def test_agentcore_apply_refuses_unapproved_or_superseded_plan(tmp_path: Path) -> None:
+    persistence = FakePersistence()
+    plan_bytes = b'{"format_version":2,"plan":{"changes":[]}}\n'
+    plan_key = "organizations/demo/plans/p1/plan.json"
+    digest = hashlib.sha256(plan_bytes).hexdigest()
+    persistence.workspace.objects[plan_key] = plan_bytes
+    persistence.metadata.put(
+        "demo",
+        "plan",
+        "p1",
+        {
+            "plan_id": "p1",
+            "organization_id": "demo",
+            "status": "ready_for_review",
+            "plan_hash": digest,
+            "artifact_s3_key": plan_key,
+        },
+    )
+    runtime = ApplyRuntime(
+        settings(tmp_path),
+        persistence=persistence,
+        token_provider=FakeTokenProvider(),
+        apply_workspace=tmp_path / "apply",
+    )
+    payload = {
+        "mode": "apply_approved_plan",
+        "organization_id": "demo",
+        "rollout_id": "r1",
+        "plan_id": "p1",
+        "plan_hash": digest,
+        "plan_s3_key": plan_key,
+    }
+    with pytest.raises(RuntimeProtocolError, match="not approved"):
+        runtime.invoke(payload)
+
+    approve_fixture(persistence, "p1", digest, plan_key)
+    persistence.metadata.put(
+        "demo",
+        "revision",
+        "rev_000002",
+        {
+            "revision_id": "rev_000002",
+            "revision_number": 2,
+            "organization_id": "demo",
+            "plan_id": "p2",
+            "plan_hash": "newer",
+        },
+    )
+    with pytest.raises(RuntimeProtocolError, match="newer desired-state revision"):
+        runtime.invoke(payload)
+
+
 def test_apply_refuses_cross_organization_artifact(tmp_path: Path) -> None:
     persistence = FakePersistence()
+    plan_bytes = b"{}"
+    digest = hashlib.sha256(plan_bytes).hexdigest()
+    foreign_key = "organizations/other/plans/p1/plan.json"
+    approve_fixture(persistence, "p1", digest, foreign_key)
     runtime = ApplyRuntime(
         settings(tmp_path),
         persistence=persistence,
@@ -271,8 +373,8 @@ def test_apply_refuses_cross_organization_artifact(tmp_path: Path) -> None:
                 "organization_id": "demo",
                 "rollout_id": "r1",
                 "plan_id": "p1",
-                "plan_hash": "0" * 64,
-                "plan_s3_key": "organizations/other/plans/p1/plan.json",
+                "plan_hash": digest,
+                "plan_s3_key": foreign_key,
             }
         )
 
