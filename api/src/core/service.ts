@@ -75,7 +75,6 @@ export class MiseApiService {
       prompt,
       sessionId: resolvedSession,
     });
-    // This path is intentionally incapable of approving or applying a plan.
     return { session_id: resolvedSession, response };
   }
 
@@ -105,7 +104,9 @@ export class MiseApiService {
     const approver = approvedBy || "demo-operator";
     const revisionNumber = await this.deps.metadata.allocateRevisionNumber(this.organizationId);
     const revisionId = `rev_${String(revisionNumber).padStart(6, "0")}`;
-    const title = cleanTitle(plan.title) || `Approved change ${revisionNumber}`;
+    const title =
+      cleanTitle(plan.title || stringFromSummary(plan.summary, "change_title")) ||
+      `Approved change ${revisionNumber}`;
     const revisionPrefix = `${organizationPrefix(this.organizationId)}/desired-revisions/${revisionId}/`;
 
     if (plan.draft_config_s3_key) {
@@ -120,8 +121,6 @@ export class MiseApiService {
       if (changeCount > 0 && revisionFiles.length === 0) {
         throw new ApiError(409, "draft configuration artifact is empty");
       }
-      // Approval establishes desired state immediately. Only the changed config
-      // files are promoted; state/checkpoint files stay at their pre-apply values.
       await this.deps.artifacts.copyPrefix(
         plan.draft_config_s3_key,
         `${organizationPrefix(this.organizationId)}/workspace/`,
@@ -191,6 +190,11 @@ export class MiseApiService {
     );
     if (!revision || revision.plan_id !== plan.plan_id || revision.plan_hash !== plan.plan_hash) {
       throw new ApiError(409, "approved plan is not bound to its desired-state revision");
+    }
+    const revisions = await this.deps.metadata.list<RevisionRecord>(this.organizationId, "revision");
+    const currentRevision = latestRevision(revisions);
+    if (!currentRevision || currentRevision.revision_id !== revision.revision_id) {
+      throw new ApiError(409, "a newer desired-state revision has replaced this plan");
     }
 
     if (previousRolloutId) {
@@ -321,6 +325,11 @@ function organizationPrefix(organizationId: string): string {
 
 function cleanTitle(value: string | undefined): string {
   return (value ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
+}
+
+function stringFromSummary(summary: Record<string, unknown> | undefined, key: string): string {
+  const value = summary?.[key];
+  return typeof value === "string" ? value : "";
 }
 
 function numberFromSummary(summary: Record<string, unknown> | undefined, key: string): number {
