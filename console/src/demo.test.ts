@@ -38,7 +38,7 @@ test("demo progress applies resources before reporting location verification", (
   assert.equal(final.non_converged_count, 3);
 });
 
-test("rollout phase text never calls partial rollout converged", () => {
+test("rollout phase text never presents a partial rollout as complete", () => {
   const rollout: RolloutRecord = {
     rollout_id: "r1",
     organization_id: "o1",
@@ -54,5 +54,5 @@ test("rollout phase text never calls partial rollout converged", () => {
     created_at: "2026-09-03T00:00:00Z",
     updated_at: "2026-09-03T00:00:00Z",
   };
-  assert.equal(rolloutPhaseLabel(rollout), "197/200 converged · 3 need attention");
+  assert.equal(rolloutPhaseLabel(rollout), "197/200 match · 3 need attention");
 });
