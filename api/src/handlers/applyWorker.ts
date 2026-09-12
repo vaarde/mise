@@ -1,4 +1,4 @@
-import type { ApplyJob } from "../core/contracts.js";
+import type { ApplyJob, PlanRecord } from "../core/contracts.js";
 import { runApplyWorker } from "../core/applyWorker.js";
 import { AwsAgentCoreApplyRuntime } from "../aws/agentcore.js";
 import { AwsDynamoMetadataStore, AwsMutationLock } from "../aws/storage.js";
@@ -12,12 +12,23 @@ const runtime = new AwsAgentCoreApplyRuntime(runtimeArn);
 
 export async function handler(job: ApplyJob): Promise<void> {
   validateJob(job);
-  await runApplyWorker(job, {
+  const result = await runApplyWorker(job, {
     metadata,
     mutationLock,
     runtime,
     now: () => new Date().toISOString(),
   });
+
+  // Plan execution and rollout convergence are separate facts. Once the
+  // deterministic apply has been verified as converged, record that the
+  // approved plan was actually executed while preserving the rollout record
+  // as the detailed verification evidence.
+  if (result.status === "converged") {
+    await metadata.update<PlanRecord>(job.organization_id, "plan", job.plan_id, {
+      status: "applied",
+      applied_at: new Date().toISOString(),
+    });
+  }
 }
 
 function validateJob(job: ApplyJob): void {
