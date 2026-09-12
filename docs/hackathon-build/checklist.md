@@ -36,14 +36,13 @@ Verified on 2026-09-02 with Go/Python tests on Windows and Ubuntu plus a real Sq
 - [x] **7. Build the React/Vite franchise operations console**
   Implemented Overview, Changes, Drift and Locations; explicit observed-state/no-baseline UX; conversational clarification; structured-config inspection; compact blast-radius plan summary; protected approval/apply controls; truthful resource-apply then location-verification progress; partial/non-converged remediation; drift/override entry points; and runtime-only operator access. The console supports real API mode via `VITE_API_BASE_URL` and a clearly labeled deterministic local demo mode for checkpoint review. Frontend build/tests plus the full Go/Python/API suite pass on Windows and Ubuntu.
 
-### CHECKPOINT 2 — Local product works ⏳ REVIEW
-Stop and review the locally running console: natural-language request → clarification → structured config → saved plan → hash-bound approval → apply → verification/convergence, plus one drift/remediation path. Code and automated verification are complete; manual operator review is the remaining checkpoint gate.
+### CHECKPOINT 2 — Local product works ✅
+Reviewed and accepted on 2026-09-12. The current operator flow is good enough to freeze for the hackathon path: request → clarification → governed plan → approval/apply/verify lifecycle, with drift/remediation affordances. A deeper visual redesign is intentionally deferred until after the core deployment and demo path are complete.
 
-- [ ] **8. Package and deploy the Strands runtime to Amazon Bedrock AgentCore**
+- [x] **8. Package and deploy the Strands runtime to Amazon Bedrock AgentCore**
   Spec ref: `spec.md > Deployment`, `spec.md > Architecture`, and `deploy/agentcore/Dockerfile`
-  What to build: Create the AgentCore runtime app and ARM64-compatible multi-stage container carrying Python/Strands plus the compiled Mise binary; configure Bedrock model access, S3/DynamoDB/Secrets Manager permissions, Square sandbox secret retrieval, logging, runtime health and deterministic command routing. Deploy the runtime and verify real tool invocation.
-  Acceptance: A deployed AgentCore session can call the bundled Mise executable through the safe runner; public browser invokes AgentCore only through the thin API; credentials stay server-side; the same typed tools work locally and deployed.
-  Verify: Build container for required architecture; deploy AgentCore; invoke runtime directly and through API; run one read-only estate query and one plan-generation flow against the real Square sandbox.
+  What was built: ARM64-compatible multi-stage AgentCore image carrying Python/Strands plus the compiled Mise binary; Bedrock Sonnet 4.6 model wiring; S3/DynamoDB/Secrets Manager integration; MMDSv2-enabled AgentCore deployment; runtime health contract; safe deterministic command routing; direct runtime smoke tooling; resource lookup that resolves human-facing display names to canonical Mise resource keys; and explicit runtime exception logging.
+  Acceptance evidence: On 2026-09-12, `MiseFranchiseOps` deployed successfully in `us-west-2`, the runtime returned a real 4-location Square sandbox estate summary, clarified a deliberately incomplete Nashville tax request, resolved `Nashville City Tax` from 3.25% to its canonical `nashville_city_tax` resource, and produced governed plan `plan_6744f6d4f72e` with SHA-256 `38ef632cebaf48abfdbbe81d1b55a80b2e76fab63c9cd9d2dbac575dc517de34`. The smoke test explicitly performed no approval and no POS write. GitHub Actions run #53 passed the full Windows/Ubuntu test matrix including ARM64 image build/boot.
 
 - [ ] **9. Deploy the public console/API and prove the complete Square sandbox demo path**
   Spec ref: `spec.md > Demo And Submission Flow` and `prd.md > Submission Proof Points`
