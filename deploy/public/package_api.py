@@ -18,6 +18,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_npm() -> str:
+    # On Windows npm is a command shim (npm.cmd). shutil.which("npm") can
+    # report it as available while CreateProcess still cannot execute the bare
+    # "npm" token. Passing the resolved executable path keeps shell=False and
+    # works consistently from PowerShell, cmd and Git Bash-launched Python.
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if not npm:
+        raise RuntimeError("npm is required to build the API bundle")
+    return npm
+
+
 def run(command: list[str], cwd: Path) -> None:
     print(f"+ {' '.join(command)}")
     subprocess.run(command, cwd=cwd, check=True)
@@ -29,17 +40,15 @@ def main() -> int:
     api = repo / "api"
     dist = api / "dist"
     archive = repo / "deploy" / "public" / "mise-api.zip"
-
-    if shutil.which("npm") is None:
-        raise RuntimeError("npm is required to build the API bundle")
+    npm = resolve_npm()
 
     shutil.rmtree(dist, ignore_errors=True)
     archive.unlink(missing_ok=True)
 
-    run(["npm", "install", "--no-package-lock"], api)
-    run(["npm", "run", "build"], api)
-    run(["npm", "test"], api)
-    run(["npm", "run", "bundle"], api)
+    run([npm, "install", "--no-package-lock"], api)
+    run([npm, "run", "build"], api)
+    run([npm, "test"], api)
+    run([npm, "run", "bundle"], api)
 
     required = [dist / "index.js", dist / "applyWorker.js"]
     missing = [str(path) for path in required if not path.exists()]
