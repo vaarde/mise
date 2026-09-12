@@ -25,6 +25,16 @@ def stack_outputs(region: str, stack_name: str) -> dict[str, str]:
     return {item["OutputKey"]: item["OutputValue"] for item in outputs}
 
 
+def resolve_npm() -> str:
+    # npm is installed as npm.cmd on Windows. Use the resolved executable path
+    # instead of relying on CreateProcess to locate a command shim from a bare
+    # "npm" token when this script is launched from Git Bash.
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if not npm:
+        raise RuntimeError("npm is required to build the console")
+    return npm
+
+
 def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
     print(f"+ {' '.join(command)}")
     subprocess.run(command, cwd=cwd, env=env, check=True)
@@ -41,15 +51,14 @@ def main() -> int:
     repo = Path(__file__).resolve().parents[2]
     console = repo / "console"
     dist = console / "dist"
-    if shutil.which("npm") is None:
-        raise RuntimeError("npm is required to build the console")
+    npm = resolve_npm()
 
     shutil.rmtree(dist, ignore_errors=True)
-    run(["npm", "install", "--no-package-lock"], console)
-    run(["npm", "test"], console)
+    run([npm, "install", "--no-package-lock"], console)
+    run([npm, "test"], console)
     env = os.environ.copy()
     env["VITE_API_BASE_URL"] = outputs["ApiBaseUrl"].rstrip("/")
-    run(["npm", "run", "build"], console, env=env)
+    run([npm, "run", "build"], console, env=env)
 
     s3 = boto3.client("s3", region_name=args.region)
     bucket = outputs["ConsoleBucketName"]
