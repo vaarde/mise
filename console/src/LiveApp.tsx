@@ -5,8 +5,11 @@ import { rolloutPhaseLabel } from "./demo.js";
 import type {
   AgentTurn,
   ConsolePage,
+  DriftRecord,
   EstateResponse,
   HistoryResponse,
+  LiveDriftItem,
+  LiveDriftResponse,
   LocationRecord,
   PlanRecord,
   RolloutRecord,
@@ -38,6 +41,21 @@ const emptyHistory: HistoryResponse = {
   snapshots: [],
 };
 
+interface DriftMeta {
+  checked: number;
+  last_fetch?: string;
+  last_apply?: string;
+}
+
+interface LiveDriftRecord extends DriftRecord {
+  location_id?: string;
+  resource_name: string;
+  resource_type: string;
+  path: string;
+  expected_raw?: unknown;
+  actual_raw?: unknown;
+}
+
 const initialTurns: AgentTurn[] = [
   {
     id: "welcome",
@@ -52,6 +70,9 @@ export default function LiveApp() {
   const [history, setHistory] = useState<HistoryResponse>(emptyHistory);
   const [activePlan, setActivePlan] = useState<PlanRecord | null>(null);
   const [rollout, setRollout] = useState<RolloutRecord | null>(null);
+  const [drift, setDrift] = useState<LiveDriftRecord[]>([]);
+  const [driftMeta, setDriftMeta] = useState<DriftMeta | null>(null);
+  const [driftChecked, setDriftChecked] = useState(false);
   const [turns, setTurns] = useState<AgentTurn[]>(initialTurns);
   const [prompt, setPrompt] = useState("");
   const [sessionId, setSessionId] = useState<string>();
@@ -60,6 +81,7 @@ export default function LiveApp() {
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [driftLoading, setDriftLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
@@ -82,15 +104,35 @@ export default function LiveApp() {
       setEstate(nextEstate);
       setHistory(nextHistory);
       setRollout(nextEstate.latest_rollout);
-      const latestPlan = latestPlanFrom(nextHistory);
-      setActivePlan(latestPlan ?? null);
+      setActivePlan(latestPlanFrom(nextHistory) ?? null);
       setConnected(true);
       setNotice(null);
+      await refreshDrift(nextEstate, false);
     } catch (error) {
       setConnected(false);
       setNotice(`Connection issue: ${errorMessage(error)}`);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function refreshDrift(estateOverride?: EstateResponse, surfaceError = true) {
+    setDriftLoading(true);
+    try {
+      const response = await client.drift();
+      const targetEstate = estateOverride ?? estate;
+      setDrift(toDriftRecords(response, targetEstate));
+      setDriftMeta({
+        checked: response.drift.checked,
+        last_fetch: response.drift.last_fetch,
+        last_apply: response.drift.last_apply,
+      });
+      setDriftChecked(true);
+    } catch (error) {
+      setDriftChecked(false);
+      if (surfaceError) setNotice(`Live drift check unavailable: ${errorMessage(error)}`);
+    } finally {
+      setDriftLoading(false);
     }
   }
 
@@ -192,8 +234,36 @@ export default function LiveApp() {
     }
   }
 
+  function actOnDrift(item: LiveDriftRecord, action: "remediate" | "override" | "investigate") {
+    if (action === "investigate") {
+      const when = driftMeta?.last_apply ? ` Last managed apply: ${driftMeta.last_apply}.` : "";
+      setNotice(`${item.location}: ${item.resource} differs at ${humanizePath(item.path)}.${when}`);
+      return;
+    }
+
+    const target = item.location === "Estate-wide" ? "the governed estate" : item.location;
+    const property = humanizePath(item.path);
+    const nextPrompt = action === "remediate"
+      ? `At ${target}, restore ${item.resource} ${property} to ${item.expected}. This is remediation for observed drift. Do not apply anything.`
+      : `At ${target}, change the approved ${item.resource} ${property} to ${item.actual} so the current Square value becomes the proposed desired state. Do not apply anything.`;
+
+    setPrompt(nextPrompt);
+    setPage("changes");
+    setTurns((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        role: "mise",
+        tone: "normal",
+        text: action === "remediate"
+          ? `I filled in a remediation request to restore ${item.resource} to the managed value. Send it to generate a new governed plan; nothing has changed yet.`
+          : `I filled in a policy-change request to keep the current Square value instead. Send it to generate a new governed plan; it still requires separate approval.`,
+      },
+    ]);
+  }
+
   const observed = estate.observed_estate;
-  const locations = locationRows(estate);
+  const locations = locationRows(estate, drift);
   const locationCount = observed?.location_count ?? locations.length;
   const stateCount = Object.keys(observed?.states ?? {}).length;
   const convergence = rollout?.locations_total
@@ -211,7 +281,7 @@ export default function LiveApp() {
         <nav aria-label="Primary navigation">
           <NavItem active={page === "overview"} label="Overview" meta="What’s happening" onClick={() => setPage("overview")} />
           <NavItem active={page === "changes"} label="Changes" meta="Review & roll out" onClick={() => setPage("changes")} />
-          <NavItem active={page === "drift"} label="Differences" meta="Live check next" onClick={() => setPage("drift")} />
+          <NavItem active={page === "drift"} label="Differences" meta={driftChecked ? (drift.length ? `${drift.length} to review` : "All clear") : "Not checked"} onClick={() => setPage("drift")} />
           <NavItem active={page === "locations"} label="Locations" meta={`${locationCount} governed`} onClick={() => setPage("locations")} />
         </nav>
         <div className="sidebar-footer">
@@ -246,6 +316,8 @@ export default function LiveApp() {
             locationCount={locationCount}
             stateCount={stateCount}
             convergence={convergence}
+            driftCount={driftChecked ? drift.length : null}
+            driftCheckedResources={driftMeta?.checked ?? null}
             onOpenChanges={() => setPage("changes")}
           />
         )}
@@ -263,7 +335,16 @@ export default function LiveApp() {
             onApply={startApply}
           />
         )}
-        {page === "drift" && <LiveDriftPlaceholder desired={estate.desired_revision?.display_name} />}
+        {page === "drift" && (
+          <LiveDriftPage
+            drift={drift}
+            checked={driftChecked}
+            loading={driftLoading}
+            meta={driftMeta}
+            onRefresh={() => void refreshDrift(undefined, true)}
+            onAction={actOnDrift}
+          />
+        )}
         {page === "locations" && <LocationsPage locations={locations} estate={estate} />}
       </main>
 
@@ -284,6 +365,8 @@ function OverviewPage({
   locationCount,
   stateCount,
   convergence,
+  driftCount,
+  driftCheckedResources,
   onOpenChanges,
 }: {
   estate: EstateResponse;
@@ -291,6 +374,8 @@ function OverviewPage({
   locationCount: number;
   stateCount: number;
   convergence: number | null;
+  driftCount: number | null;
+  driftCheckedResources: number | null;
   onOpenChanges: () => void;
 }) {
   const observed = estate.observed_estate;
@@ -313,7 +398,7 @@ function OverviewPage({
         <Metric label="Locations" value={String(locationCount)} detail="in the latest governed estate" />
         <Metric label="States" value={String(stateCount)} detail={stateSummary(observed?.states ?? {})} />
         <Metric label="Latest rollout verified" value={convergence === null ? "—" : `${convergence}%`} detail={rollout ? rolloutPhaseLabel(rollout) : "No rollout yet"} />
-        <Metric label="Differences to review" value="—" detail="live drift check not run in this view yet" />
+        <Metric label="Differences to review" value={driftCount === null ? "—" : String(driftCount)} detail={driftCheckedResources === null ? "live drift not checked" : `${driftCheckedResources} managed resources checked`} />
       </div>
 
       <div className="two-column">
@@ -400,15 +485,61 @@ function ChangesPage({
   );
 }
 
-function LiveDriftPlaceholder({ desired }: { desired?: string }) {
+function LiveDriftPage({
+  drift,
+  checked,
+  loading,
+  meta,
+  onRefresh,
+  onAction,
+}: {
+  drift: LiveDriftRecord[];
+  checked: boolean;
+  loading: boolean;
+  meta: DriftMeta | null;
+  onRefresh: () => void;
+  onAction: (item: LiveDriftRecord, action: "remediate" | "override" | "investigate") => void;
+}) {
   return (
     <section className="page-grid everyday-drift-page">
       <div className="section-intro">
         <div>
-          <p className="eyebrow">No simulated differences</p>
-          <h2>Live drift will be read directly from deterministic Mise</h2>
-          <p>This public view intentionally shows no canned drift records. The current approved setup is {desired ?? "not set"}. The next deployment slice will expose the read-only `mise drift --json` result here before we create a deliberate Square sandbox difference.</p>
+          <p className="eyebrow">Deterministic live check</p>
+          <h2>Square differences from Mise-managed state</h2>
+          <p>Mise reads Square and compares it with the checkpointed managed state. A difference is evidence only; it is never accepted or repaired automatically.</p>
         </div>
+        <button className="button secondary" onClick={onRefresh} disabled={loading}>{loading ? "Checking…" : "Check Square now"}</button>
+      </div>
+
+      {!checked && !loading && <EmptyState title="Live drift has not been checked" text="Run the read-only check to compare managed state with Square." />}
+      {checked && drift.length === 0 && (
+        <article className="panel">
+          <span className="status-pill converged">All clear</span>
+          <h3>No managed resources have drifted</h3>
+          <p className="muted">Mise checked {meta?.checked ?? 0} tracked resources against Square. Last managed apply: {meta?.last_apply ?? "not recorded"}.</p>
+        </article>
+      )}
+
+      <div className="drift-list">
+        {drift.map((item) => (
+          <article className="panel drift-card everyday-drift-card" key={item.drift_id}>
+            <div className="drift-head">
+              <div><span className={`risk ${item.impact}`}>{friendlyImpact(item.impact)}</span><h3>{item.location}</h3><p>{item.resource}</p></div>
+              <span className="status-pill open">Needs review</span>
+            </div>
+            <div className="compare-grid everyday-compare">
+              <div><span>Managed value</span><strong>{item.expected}</strong></div>
+              <div><span>In Square now</span><strong>{item.actual}</strong></div>
+            </div>
+            <p className="muted drift-reason"><strong>What Mise found:</strong> {item.rationale}</p>
+            <div className="drift-choice-note"><strong>No automatic action:</strong> restoring the managed value or keeping the Square value will only prepare a new governed request. Either path still requires explicit approval before a write.</div>
+            <div className="drift-actions everyday-drift-actions">
+              <button className="button primary" onClick={() => onAction(item, "remediate")}>Restore {item.expected}</button>
+              <button className="button secondary" onClick={() => onAction(item, "override")}>Keep {item.actual} instead</button>
+              <button className="text-button" onClick={() => onAction(item, "investigate")}>See what changed</button>
+            </div>
+          </article>
+        ))}
       </div>
     </section>
   );
@@ -421,7 +552,7 @@ function LocationsPage({ locations, estate }: { locations: LocationRecord[]; est
       <article className="panel table-panel">
         {locations.length ? (
           <table><thead><tr><th>Location</th><th>Area</th><th>Group</th><th>Status</th></tr></thead><tbody>
-            {locations.map((location) => <tr key={location.id}><td><strong>{location.name}</strong><span>{location.id}</span></td><td>{[location.city, location.state].filter(Boolean).join(", ") || "—"}</td><td><code>{location.group}</code></td><td><span className={`status-pill ${location.status}`}>Observed</span></td></tr>)}
+            {locations.map((location) => <tr key={location.id}><td><strong>{location.name}</strong><span>{location.id}</span></td><td>{[location.city, location.state].filter(Boolean).join(", ") || "—"}</td><td><code>{location.group}</code></td><td><span className={`status-pill ${location.status}`}>{friendlyLocationStatus(location.status)}</span></td></tr>)}
           </tbody></table>
         ) : <EmptyState title="No locations loaded" text="Refresh the live estate after checking the public API connection." />}
       </article>
@@ -446,14 +577,63 @@ function AccessDialog({ accessCode, setAccessCode, onClose }: { accessCode: stri
   );
 }
 
-function locationRows(estate: EstateResponse): LocationRecord[] {
+function toDriftRecords(response: LiveDriftResponse, estate: EstateResponse): LiveDriftRecord[] {
+  const names = new Map((estate.observed_estate?.locations ?? []).map((location) => [location.id, location.name]));
+  const records: LiveDriftRecord[] = [];
+
+  for (const item of response.drift.drifted) {
+    const locationIds: Array<string | undefined> = item.location_ids.length ? item.location_ids : [undefined];
+    const diffs: Array<LiveDriftItem["diffs"][number] | undefined> = item.reason === "deleted" || !item.diffs.length ? [undefined] : item.diffs;
+    for (const locationId of locationIds) {
+      for (const [index, diff] of diffs.entries()) {
+        records.push(driftRecord(item, locationId, names, diff, index));
+      }
+    }
+  }
+  return records;
+}
+
+function driftRecord(
+  item: LiveDriftItem,
+  locationId: string | undefined,
+  names: Map<string, string>,
+  diff: LiveDriftItem["diffs"][number] | undefined,
+  index: number,
+): LiveDriftRecord {
+  const path = diff?.path ?? "resource";
+  const expectedRaw = item.reason === "deleted" ? "Present" : diff?.old_value;
+  const actualRaw = item.reason === "deleted" ? "Missing in Square" : diff?.new_value;
+  const resource = humanizeResource(item.resource_name);
+  const location = locationId ? (names.get(locationId) ?? locationId) : "Estate-wide";
+  return {
+    drift_id: `${item.full_name}:${locationId ?? "all"}:${path}:${index}`,
+    location_id: locationId,
+    location,
+    resource,
+    resource_name: item.resource_name,
+    resource_type: item.resource_type,
+    path,
+    expected_raw: expectedRaw,
+    actual_raw: actualRaw,
+    expected: formatDriftValue(path, expectedRaw),
+    actual: formatDriftValue(path, actualRaw),
+    rationale: item.reason === "deleted"
+      ? "The managed resource is no longer present in Square."
+      : `The deterministic drift check found ${humanizePath(path)} differs from the last Mise-managed value.`,
+    impact: driftImpact(item.resource_type, path),
+    status: "open",
+  };
+}
+
+function locationRows(estate: EstateResponse, drift: LiveDriftRecord[]): LocationRecord[] {
+  const attention = new Set(drift.map((item) => item.location_id).filter((value): value is string => Boolean(value)));
   return (estate.observed_estate?.locations ?? []).map((location) => ({
     id: location.id,
     name: location.name,
     city: location.metadata?.city ?? "",
     state: location.state ?? "",
     group: "all",
-    status: "observed",
+    status: attention.has(location.id) ? "attention" : "observed",
   }));
 }
 
@@ -520,6 +700,36 @@ function friendlyPlanStatus(value: PlanRecord["status"]): string {
     applied: "Applied",
     cancelled: "Cancelled",
   })[value];
+}
+
+function friendlyLocationStatus(value: LocationRecord["status"]): string {
+  return ({ converged: "Matches", attention: "Needs attention", observed: "Observed" })[value];
+}
+
+function friendlyImpact(value: DriftRecord["impact"]): string {
+  return value === "financial" ? "Money impact" : value === "operational" ? "Operations impact" : "Low impact";
+}
+
+function driftImpact(resourceType: string, path: string): DriftRecord["impact"] {
+  if (resourceType.includes("tax") || resourceType.includes("discount") || /(percentage|price|amount)/i.test(path)) return "financial";
+  if (/name|description|abbreviation/i.test(path)) return "low";
+  return "operational";
+}
+
+function humanizeResource(value: string): string {
+  return value.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function humanizePath(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
+function formatDriftValue(path: string, value: unknown): string {
+  if (value === undefined || value === null || value === "") return "—";
+  if (/percentage/i.test(path)) return `${String(value)}%`;
+  if (Array.isArray(value)) return value.map(String).join(", ") || "None";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 function pageTitle(page: ConsolePage): string {
