@@ -1,4 +1,4 @@
-import type { EstateResponse, HistoryResponse, PlanRecord, RolloutRecord } from "../types.js";
+import type { EstateResponse, HistoryResponse, LiveDriftResponse, PlanRecord, RolloutRecord } from "../types.js";
 
 export class ConsoleApiError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -20,6 +20,10 @@ export class MiseConsoleClient {
 
   liveEstate(): Promise<EstateResponse> {
     return this.request<EstateResponse>("/live-estate");
+  }
+
+  drift(): Promise<LiveDriftResponse> {
+    return this.request<LiveDriftResponse>("/drift");
   }
 
   history(): Promise<HistoryResponse> {
