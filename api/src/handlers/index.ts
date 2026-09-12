@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AwsAgentCoreInvoker, AwsLambdaApplyDispatcher } from "../aws/agentcore.js";
+import { CachedSecretValue } from "../aws/secrets.js";
 import {
   AwsDynamoMetadataStore,
   AwsMutationLock,
@@ -13,11 +14,12 @@ const metadataTable = requiredEnv("MISE_METADATA_TABLE");
 const artifactBucket = requiredEnv("MISE_ARTIFACT_BUCKET");
 const runtimeArn = requiredEnv("MISE_AGENT_RUNTIME_ARN");
 const applyWorkerFunction = requiredEnv("MISE_APPLY_WORKER_FUNCTION");
-const mutationSecret = requiredEnv("MISE_DEMO_ACCESS_SECRET");
+const mutationSecretId = requiredEnv("MISE_DEMO_ACCESS_SECRET_ID");
 
 const metadata = new AwsDynamoMetadataStore(metadataTable);
 const artifacts = new AwsS3ArtifactStore(artifactBucket);
 const mutationLock = new AwsMutationLock(metadataTable);
+const mutationSecret = new CachedSecretValue(mutationSecretId);
 const service = new MiseApiService(organizationId, {
   metadata,
   artifacts,
@@ -28,7 +30,7 @@ const service = new MiseApiService(organizationId, {
   uuid: () => randomUUID(),
 });
 
-export const handler = createHttpHandler(service, mutationSecret);
+export const handler = createHttpHandler(service, () => mutationSecret.get());
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
