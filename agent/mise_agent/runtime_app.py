@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
 
@@ -13,6 +14,7 @@ from .runtime import (
     RuntimeSettings,
 )
 
+logger = logging.getLogger(__name__)
 app = FastAPI(title="Mise AgentCore Runtime", docs_url=None, redoc_url=None)
 _runtime: AgentCoreRuntime | None = None
 _runtime_lock = threading.Lock()
@@ -54,8 +56,9 @@ async def invocations(request: Request) -> JSONResponse:
     except (RuntimeConfigurationError, RuntimeProtocolError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        # The platform receives a concise error while the traceback is retained
-        # in AgentCore/CloudWatch logs by the ASGI server.
+        # Keep client errors concise while retaining the full exception and
+        # traceback in AgentCore/CloudWatch for operational diagnosis.
+        logger.exception("Unhandled Mise AgentCore runtime failure")
         raise HTTPException(status_code=500, detail=f"Mise runtime failed: {type(exc).__name__}") from exc
     finally:
         with _busy_lock:
