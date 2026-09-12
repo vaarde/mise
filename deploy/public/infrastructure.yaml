@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Mise public demo API, protected apply worker, and CloudFront console
+
+Parameters:
+  WorkspaceBucketName:
+    Type: String
+    Description: Existing private Mise workspace/artifact bucket from the AgentCore stack
+  MetadataTableName:
+    Type: String
+    Description: Existing Mise metadata/lock DynamoDB table
+  AgentRuntimeArn:
+    Type: String
+    Description: Deployed Mise Bedrock AgentCore runtime ARN
+  OrganizationId:
+    Type: String
+    Default: mise-demo-franchise
+  ApiCodeS3Key:
+    Type: String
+    Description: S3 key in WorkspaceBucketName containing the bundled API Lambda zip
+  DemoAccessSecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the private operator mutation code
+
+Resources:
+  ApplyWorkerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: MiseApplyWorker
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeAgentCore
+                Effect: Allow
+                Action: bedrock-agentcore:InvokeAgentRuntime
+                Resource: !Ref AgentRuntimeArn
+              - Sid: Metadata
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MetadataTableName}
+
+  ApplyWorkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Executes only already-approved Mise plans through AgentCore
+      Runtime: nodejs22.x
+      Architectures:
+        - arm64
+      Handler: applyWorker.handler
+      Role: !GetAtt ApplyWorkerExecutionRole.Arn
+      Timeout: 900
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref WorkspaceBucketName
+        S3Key: !Ref ApiCodeS3Key
+      Environment:
+        Variables:
+          MISE_METADATA_TABLE: !Ref MetadataTableName
+          MISE_AGENT_RUNTIME_ARN: !Ref AgentRuntimeArn
+
+  ApiExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: MisePublicApi
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeAgentCore
+                Effect: Allow
+                Action: bedrock-agentcore:InvokeAgentRuntime
+                Resource: !Ref AgentRuntimeArn
+              - Sid: DispatchApplyWorker
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt ApplyWorkerFunction.Arn
+              - Sid: Metadata
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${MetadataTableName}
+              - Sid: ListOrganizationArtifacts
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub arn:${AWS::Partition}:s3:::${WorkspaceBucketName}
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - !Sub organizations/${OrganizationId}/*
+              - Sid: OrganizationArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${WorkspaceBucketName}/organizations/${OrganizationId}/*
+              - Sid: ReadMutationSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DemoAccessSecretArn
+
+  HttpFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Thin public Mise browser API; mutations require the private operator code
+      Runtime: nodejs22.x
+      Architectures:
+        - arm64
+      Handler: index.handler
+      Role: !GetAtt ApiExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref WorkspaceBucketName
+        S3Key: !Ref ApiCodeS3Key
+      Environment:
+        Variables:
+          MISE_ORGANIZATION_ID: !Ref OrganizationId
+          MISE_METADATA_TABLE: !Ref MetadataTableName
+          MISE_ARTIFACT_BUCKET: !Ref WorkspaceBucketName
+          MISE_AGENT_RUNTIME_ARN: !Ref AgentRuntimeArn
+          MISE_APPLY_WORKER_FUNCTION: !Ref ApplyWorkerFunction
+          MISE_DEMO_ACCESS_SECRET_ID: !Ref DemoAccessSecretArn
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ${AWS::StackName}-api
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - content-type
+          - x-mise-demo-access
+          - last-event-id
+        MaxAge: 300
+
+  HttpIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt HttpFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: '$default'
+      Target: !Sub integrations/${HttpIntegration}
+
+  DefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: '$default'
+      AutoDeploy: true
+
+  HttpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref HttpFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  ConsoleBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ConsoleOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-console-oac
+        Description: Signed CloudFront access to the private Mise console bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ConsoleDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: Mise public hackathon console
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: console-s3
+            DomainName: !GetAtt ConsoleBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt ConsoleOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: console-s3
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+  ConsoleBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ConsoleBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${ConsoleBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ConsoleDistribution}
+
+Outputs:
+  ApiBaseUrl:
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+  HttpFunctionName:
+    Value: !Ref HttpFunction
+  ApplyWorkerFunctionName:
+    Value: !Ref ApplyWorkerFunction
+  ConsoleBucketName:
+    Value: !Ref ConsoleBucket
+  ConsoleDistributionId:
+    Value: !Ref ConsoleDistribution
+  ConsoleUrl:
+    Value: !Sub https://${ConsoleDistribution.DomainName}
