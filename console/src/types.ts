@@ -26,6 +26,7 @@ export interface PlanRecord {
   created_at: string;
   approved_at?: string | null;
   approved_by?: string | null;
+  applied_at?: string | null;
 }
 
 export type RolloutStatus =
@@ -54,12 +55,32 @@ export interface RolloutRecord {
   previous_rollout_id?: string;
 }
 
+export interface ObservedLocation {
+  id: string;
+  name: string;
+  address?: string;
+  state?: string;
+  timezone?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface ObservedEstate {
+  source: string;
+  source_plan_id?: string;
+  observed_at?: string | null;
+  location_count: number;
+  states: Record<string, number>;
+  groups: string[];
+  locations: ObservedLocation[];
+}
+
 export interface EstateResponse {
   organization_id: string;
   latest_snapshot: SnapshotRecord | null;
   desired_revision: RevisionRecord | null;
   latest_rollout: RolloutRecord | null;
   has_desired_state: boolean;
+  observed_estate?: ObservedEstate;
 }
 
 export interface HistoryResponse {
