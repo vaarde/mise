@@ -18,6 +18,10 @@ export class MiseConsoleClient {
     return this.request<EstateResponse>("/estate");
   }
 
+  liveEstate(): Promise<EstateResponse> {
+    return this.request<EstateResponse>("/live-estate");
+  }
+
   history(): Promise<HistoryResponse> {
     return this.request<HistoryResponse>("/history");
   }
@@ -65,10 +69,11 @@ export class MiseConsoleClient {
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (!this.baseUrl) throw new ConsoleApiError(503, "Mise API is not configured");
+    const hasBody = init.body !== undefined && init.body !== null;
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
       headers: {
-        "content-type": "application/json",
+        ...(hasBody ? { "content-type": "application/json" } : {}),
         ...(init.headers ?? {}),
       },
     });
