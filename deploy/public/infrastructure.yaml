@@ -42,7 +42,9 @@ Resources:
               - Sid: InvokeAgentCore
                 Effect: Allow
                 Action: bedrock-agentcore:InvokeAgentRuntime
-                Resource: !Ref AgentRuntimeArn
+                Resource:
+                  - !Ref AgentRuntimeArn
+                  - !Sub '${AgentRuntimeArn}/runtime-endpoint/*'
               - Sid: Metadata
                 Effect: Allow
                 Action:
@@ -92,7 +94,9 @@ Resources:
               - Sid: InvokeAgentCore
                 Effect: Allow
                 Action: bedrock-agentcore:InvokeAgentRuntime
-                Resource: !Ref AgentRuntimeArn
+                Resource:
+                  - !Ref AgentRuntimeArn
+                  - !Sub '${AgentRuntimeArn}/runtime-endpoint/*'
               - Sid: DispatchApplyWorker
                 Effect: Allow
                 Action: lambda:InvokeFunction
