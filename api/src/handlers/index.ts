@@ -22,11 +22,12 @@ const metadata = new AwsDynamoMetadataStore(metadataTable);
 const artifacts = new AwsS3ArtifactStore(artifactBucket);
 const mutationLock = new AwsMutationLock(metadataTable);
 const mutationSecret = new CachedSecretValue(mutationSecretId);
+const agentCore = new AwsAgentCoreInvoker(runtimeArn);
 const service = new MiseApiService(organizationId, {
   metadata,
   artifacts,
   mutationLock,
-  agent: new AwsAgentCoreInvoker(runtimeArn),
+  agent: agentCore,
   dispatcher: new AwsLambdaApplyDispatcher(applyWorkerFunction),
   now: () => new Date().toISOString(),
   uuid: () => randomUUID(),
@@ -39,30 +40,47 @@ const baseHandler = createHttpHandler(service, () => mutationSecret.get());
  * also needs a truthful location estate. This read-only route derives the
  * location list from the newest governed plan artifact rather than falling
  * back to the console's 200-location demonstration fixture.
+ *
+ * /drift delegates to AgentCore's deterministic `mise drift --json` path. It
+ * is intentionally public/read-only; it records no acceptance and performs no
+ * POS mutation.
  */
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> {
   const method = event.requestContext.http.method.toUpperCase();
   const path = event.rawPath || "/";
-  if (method !== "GET" || path !== "/live-estate") {
-    return baseHandler(event);
+
+  if (method === "GET" && path === "/live-estate") {
+    try {
+      const [estate, plans] = await Promise.all([
+        service.estate(),
+        metadata.list<PlanRecord>(organizationId, "plan"),
+      ]);
+      const observedEstate = await loadObservedEstate(plans);
+      return json(200, { ...estate, observed_estate: observedEstate });
+    } catch (error) {
+      console.error("live estate read failed", error);
+      return json(500, {
+        error: "live_estate_unavailable",
+        message: "Mise could not load the governed location estate.",
+      });
+    }
   }
 
-  try {
-    const [estate, plans] = await Promise.all([
-      service.estate(),
-      metadata.list<PlanRecord>(organizationId, "plan"),
-    ]);
-    const observedEstate = await loadObservedEstate(plans);
-    return json(200, { ...estate, observed_estate: observedEstate });
-  } catch (error) {
-    console.error("live estate read failed", error);
-    return json(500, {
-      error: "live_estate_unavailable",
-      message: "Mise could not load the governed location estate.",
-    });
+  if (method === "GET" && path === "/drift") {
+    try {
+      return json(200, await agentCore.readDrift(organizationId));
+    } catch (error) {
+      console.error("live drift read failed", error);
+      return json(502, {
+        error: "live_drift_unavailable",
+        message: "Mise could not complete the read-only Square drift check.",
+      });
+    }
   }
+
+  return baseHandler(event);
 }
 
 async function loadObservedEstate(plans: PlanRecord[]): Promise<Record<string, unknown>> {
