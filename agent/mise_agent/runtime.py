@@ -1,0 +1,504 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Literal
+
+import boto3
+from botocore.exceptions import ClientError
+from pydantic import BaseModel, ConfigDict
+
+from mise_cli.runner import MiseRunner
+
+from .cloud_persistence import (
+    CloudPersistence,
+    DynamoMetadataStore,
+    OrganizationMutationLock,
+    PlanMetadata,
+    S3WorkspaceStore,
+    safe_relative,
+    safe_segment,
+    utc_now,
+)
+from .config_renderer import LocationIndex
+from .governance import GovernanceStore
+from .service import MiseOperationsAgent
+
+
+class RuntimeConfigurationError(RuntimeError):
+    pass
+
+
+class RuntimeProtocolError(RuntimeError):
+    pass
+
+
+class RuntimeModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class MessageInvocation(RuntimeModel):
+    mode: Literal["message"]
+    organization_id: str
+    prompt: str
+
+
+class EstateSummaryInvocation(RuntimeModel):
+    mode: Literal["estate_summary"]
+    organization_id: str
+
+
+class ApplyInvocation(RuntimeModel):
+    mode: Literal["apply_approved_plan"]
+    organization_id: str
+    rollout_id: str
+    plan_id: str
+    plan_hash: str
+    plan_s3_key: str
+
+
+Invocation = MessageInvocation | EstateSummaryInvocation | ApplyInvocation
+
+
+@dataclass(frozen=True)
+class RuntimeSettings:
+    workspace_bucket: str
+    metadata_table: str
+    square_secret_id: str | None
+    mise_executable: Path
+    workspace_root: Path
+    mise_timeout_seconds: float = 120.0
+
+    @classmethod
+    def from_env(cls) -> "RuntimeSettings":
+        bucket = os.getenv("MISE_WORKSPACE_BUCKET", "").strip()
+        table = os.getenv("MISE_METADATA_TABLE", "").strip()
+        if not bucket:
+            raise RuntimeConfigurationError("MISE_WORKSPACE_BUCKET is required")
+        if not table:
+            raise RuntimeConfigurationError("MISE_METADATA_TABLE is required")
+        return cls(
+            workspace_bucket=bucket,
+            metadata_table=table,
+            square_secret_id=os.getenv("MISE_SQUARE_SECRET_ID", "").strip() or None,
+            mise_executable=Path(
+                os.getenv("MISE_EXECUTABLE", "/usr/local/bin/mise")
+            ).resolve(),
+            workspace_root=Path(
+                os.getenv("MISE_RUNTIME_WORKSPACE_ROOT", "/tmp/mise-runtime")
+            ).resolve(),
+            mise_timeout_seconds=float(os.getenv("MISE_COMMAND_TIMEOUT_SECONDS", "120")),
+        )
+
+
+class SquareTokenProvider:
+    """Resolve a Square token without writing it into the persisted workspace."""
+
+    def __init__(self, secret_id: str | None, *, secrets_client: Any | None = None) -> None:
+        self.secret_id = secret_id
+        self.secrets = secrets_client or boto3.client("secretsmanager")
+        self._cached: str | None = None
+
+    def get(self) -> str:
+        if self._cached:
+            return self._cached
+        for name in ("MISE_SQUARE_ACCESS_TOKEN", "SQUARE_ACCESS_TOKEN"):
+            token = os.getenv(name, "").strip()
+            if token:
+                self._cached = token
+                return token
+        if not self.secret_id:
+            raise RuntimeConfigurationError(
+                "Square credentials are unavailable; set MISE_SQUARE_SECRET_ID or MISE_SQUARE_ACCESS_TOKEN"
+            )
+        response = self.secrets.get_secret_value(SecretId=self.secret_id)
+        if response.get("SecretString") is not None:
+            raw = str(response["SecretString"])
+        elif response.get("SecretBinary") is not None:
+            binary = response["SecretBinary"]
+            if isinstance(binary, str):
+                binary = base64.b64decode(binary)
+            raw = bytes(binary).decode("utf-8")
+        else:
+            raise RuntimeConfigurationError("Square secret contains no value")
+        self._cached = extract_access_token(raw)
+        return self._cached
+
+
+@dataclass
+class RuntimeSession:
+    organization_id: str
+    workspace: Path
+    runner: MiseRunner
+    service: MiseOperationsAgent
+
+
+class AgentCoreRuntime:
+    """AgentCore-facing router around the governed Mise workflow.
+
+    AgentCore isolates runtime sessions at the microVM layer. Within a session
+    the service instance is reused so Strands retains clarification context.
+    The Square token is supplied only through the Mise subprocess environment.
+    """
+
+    def __init__(
+        self,
+        settings: RuntimeSettings,
+        *,
+        persistence: CloudPersistence | None = None,
+        token_provider: SquareTokenProvider | None = None,
+        service_factory: Callable[[Path, MiseRunner, str], MiseOperationsAgent] | None = None,
+    ) -> None:
+        self.settings = settings
+        self.persistence = persistence or CloudPersistence(
+            workspace=S3WorkspaceStore(settings.workspace_bucket),
+            metadata=DynamoMetadataStore(settings.metadata_table),
+            mutation_lock=OrganizationMutationLock(settings.metadata_table),
+        )
+        self.token_provider = token_provider or SquareTokenProvider(settings.square_secret_id)
+        self.service_factory = service_factory or default_service_factory
+        self._sessions: dict[str, RuntimeSession] = {}
+
+    def invoke(self, payload: dict[str, Any]) -> dict[str, Any]:
+        invocation = parse_invocation(payload)
+        if isinstance(invocation, MessageInvocation):
+            return self._message(invocation)
+        if isinstance(invocation, EstateSummaryInvocation):
+            return self._estate_summary(invocation)
+        if isinstance(invocation, ApplyInvocation):
+            return self._apply(invocation)
+        raise RuntimeProtocolError(f"unsupported invocation: {type(invocation).__name__}")
+
+    def _message(self, invocation: MessageInvocation) -> dict[str, Any]:
+        session = self._session(invocation.organization_id)
+        result = session.service.prepare_plan(invocation.prompt)
+        proposal = result.model_dump(mode="json")
+
+        if result.status == "needs_clarification":
+            return {
+                "status": "needs_clarification",
+                "message": result.clarification_question
+                or "I need one more detail before I can prepare the change.",
+                "proposal": proposal,
+            }
+
+        assert result.plan_id and result.plan_hash and result.plan_path
+        artifact = confined_workspace_path(session.workspace, result.plan_path)
+        plan_bytes = artifact.read_bytes()
+        if sha256_bytes(plan_bytes) != result.plan_hash:
+            raise RuntimeProtocolError("governed plan bytes no longer match their registered hash")
+
+        plan_key = self.persistence.workspace.put_plan(
+            invocation.organization_id, result.plan_id, plan_bytes
+        )
+        draft_prefix = self._upload_draft_config(
+            invocation.organization_id,
+            result.plan_id,
+            session.workspace,
+            result.changed_files,
+        )
+
+        # Planning is a proposal, not desired state. Restore the session's
+        # active config from S3 after capturing the draft so rejected plans do
+        # not leak into the next request or the durable workspace.
+        restore_active_config(
+            self.persistence.workspace,
+            invocation.organization_id,
+            session.workspace,
+            result.changed_files,
+        )
+
+        summary = dict((result.plan or {}).get("summary", {}))
+        if result.title:
+            summary["change_title"] = result.title
+        self.persistence.metadata.put_plan(
+            PlanMetadata(
+                plan_id=result.plan_id,
+                organization_id=invocation.organization_id,
+                title=result.title or "",
+                plan_hash=result.plan_hash,
+                status="ready_for_review",
+                artifact_s3_key=plan_key,
+                draft_config_s3_key=draft_prefix,
+                summary=summary,
+                created_at=utc_now(),
+            )
+        )
+        return {
+            "status": "planned",
+            "message": (
+                f"{result.interpretation} I prepared the change for review. "
+                "Nothing has been applied yet."
+            ),
+            "proposal": proposal,
+            "plan": {
+                "plan_id": result.plan_id,
+                "plan_hash": result.plan_hash,
+                "artifact_s3_key": plan_key,
+                "draft_config_s3_key": draft_prefix,
+            },
+        }
+
+    def _estate_summary(self, invocation: EstateSummaryInvocation) -> dict[str, Any]:
+        session = self._session(invocation.organization_id)
+        return {
+            "status": "ok",
+            "organization_id": invocation.organization_id,
+            "estate": LocationIndex(session.workspace).summary(),
+        }
+
+    def _apply(self, invocation: ApplyInvocation) -> dict[str, Any]:
+        # Do not trust the invocation's mode name as proof of approval. Re-read
+        # cloud governance state inside AgentCore so direct AWS invocations
+        # cannot bypass the browser/API approval boundary.
+        self._require_current_approved_plan(invocation)
+
+        # Approval has already promoted reviewed config into workspace/. Hydrate
+        # that current desired workspace and let the Go plan provenance check its
+        # config digest and pre-apply state serial.
+        session = self._session(invocation.organization_id, refresh=True)
+        plan_bytes = read_organization_bytes(
+            self.persistence.workspace,
+            invocation.organization_id,
+            invocation.plan_s3_key,
+        )
+        actual_hash = sha256_bytes(plan_bytes)
+        if actual_hash != invocation.plan_hash:
+            raise RuntimeProtocolError(
+                f"approved plan hash mismatch: expected {invocation.plan_hash}, got {actual_hash}"
+            )
+
+        runtime_plan = (
+            session.workspace
+            / ".mise"
+            / "runtime"
+            / f"{safe_segment(invocation.plan_id)}.json"
+        )
+        runtime_plan.parent.mkdir(parents=True, exist_ok=True)
+        runtime_plan.write_bytes(plan_bytes)
+
+        apply_result = None
+        verify_events: list[dict[str, Any]] = []
+        try:
+            apply_result = session.runner.apply(runtime_plan)
+            if apply_result.status in {
+                "success",
+                "partial",
+                "outcome_uncertain",
+                "no_changes",
+            }:
+                verify_events = [
+                    event.model_dump(mode="json")
+                    for event in session.runner.verify(runtime_plan)
+                ]
+        finally:
+            # The runtime copy of the plan is transient. Persist desired config
+            # and Mise's checkpointed state, but not this execution scratch file.
+            runtime_plan.unlink(missing_ok=True)
+            self.persistence.sync(invocation.organization_id, session.workspace)
+
+        if apply_result is None:
+            raise RuntimeProtocolError("apply ended without a machine-readable result")
+        return {
+            "apply": apply_result.model_dump(
+                mode="json", exclude={"return_code", "stderr"}
+            ),
+            "verify_events": verify_events,
+        }
+
+    def _require_current_approved_plan(self, invocation: ApplyInvocation) -> None:
+        plan = self.persistence.metadata.get(
+            invocation.organization_id, "plan", invocation.plan_id
+        )
+        if plan is None:
+            raise RuntimeProtocolError(f"unknown governed plan: {invocation.plan_id}")
+        if plan.get("status") not in {"approved", "applied"}:
+            raise RuntimeProtocolError("plan is not approved for execution")
+        if plan.get("plan_hash") != invocation.plan_hash:
+            raise RuntimeProtocolError("invocation hash does not match approved plan metadata")
+        if plan.get("artifact_s3_key") != invocation.plan_s3_key:
+            raise RuntimeProtocolError("invocation artifact key does not match approved plan metadata")
+
+        revision_id = str(plan.get("revision_id") or "")
+        if not revision_id:
+            raise RuntimeProtocolError("approved plan is missing its desired-state revision")
+        revision = self.persistence.metadata.get(
+            invocation.organization_id, "revision", revision_id
+        )
+        if revision is None:
+            raise RuntimeProtocolError("desired-state revision metadata is missing")
+        if revision.get("plan_id") != invocation.plan_id or revision.get("plan_hash") != invocation.plan_hash:
+            raise RuntimeProtocolError("desired-state revision is not bound to this exact plan")
+
+        revisions = self.persistence.metadata.list(invocation.organization_id, "revision")
+        if not revisions:
+            raise RuntimeProtocolError("organization has no desired-state revision")
+        current = max(revisions, key=lambda item: int(item.get("revision_number", 0)))
+        if current.get("revision_id") != revision_id:
+            raise RuntimeProtocolError("a newer desired-state revision has replaced this plan")
+
+    def _session(self, organization_id: str, *, refresh: bool = False) -> RuntimeSession:
+        organization_id = safe_segment(organization_id)
+        if not refresh and organization_id in self._sessions:
+            return self._sessions[organization_id]
+
+        workspace = self.settings.workspace_root / organization_id
+        if refresh and workspace.exists():
+            shutil.rmtree(workspace)
+        workspace.mkdir(parents=True, exist_ok=True)
+        hydrated = self.persistence.hydrate(organization_id, workspace)
+        if not hydrated or not (workspace / "mise.yaml").is_file():
+            raise RuntimeConfigurationError(
+                f"organization {organization_id} has no hydrated Mise workspace in S3"
+            )
+        if not self.settings.mise_executable.is_file():
+            raise RuntimeConfigurationError(
+                f"Mise executable is missing: {self.settings.mise_executable}"
+            )
+
+        runner = MiseRunner(
+            self.settings.mise_executable,
+            workspace,
+            timeout_seconds=self.settings.mise_timeout_seconds,
+            env={"MISE_SQUARE_ACCESS_TOKEN": self.token_provider.get()},
+        )
+        service = self.service_factory(workspace, runner, organization_id)
+        session = RuntimeSession(organization_id, workspace, runner, service)
+        self._sessions[organization_id] = session
+        return session
+
+    def _upload_draft_config(
+        self,
+        organization_id: str,
+        plan_id: str,
+        workspace: Path,
+        changed_files: list[str],
+    ) -> str | None:
+        if not changed_files:
+            return None
+        staging = workspace / ".mise" / "runtime-draft" / safe_segment(plan_id)
+        if staging.exists():
+            shutil.rmtree(staging)
+        for relative in changed_files:
+            source = confined_workspace_path(workspace, relative)
+            if not source.is_file():
+                continue
+            target = staging / Path(relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+        keys = self.persistence.workspace.put_draft_config(
+            organization_id, plan_id, staging
+        )
+        shutil.rmtree(staging, ignore_errors=True)
+        if not keys:
+            return None
+        return draft_config_prefix(self.persistence.workspace, organization_id, plan_id)
+
+
+def default_service_factory(
+    workspace: Path, runner: MiseRunner, organization_id: str
+) -> MiseOperationsAgent:
+    return MiseOperationsAgent(
+        workspace,
+        runner,
+        governance=GovernanceStore(workspace, organization_id=organization_id),
+    )
+
+
+def parse_invocation(payload: dict[str, Any]) -> Invocation:
+    mode = payload.get("mode")
+    if mode == "message":
+        return MessageInvocation.model_validate(payload)
+    if mode == "estate_summary":
+        return EstateSummaryInvocation.model_validate(payload)
+    if mode == "apply_approved_plan":
+        return ApplyInvocation.model_validate(payload)
+    raise RuntimeProtocolError(f"unknown invocation mode: {mode!r}")
+
+
+def extract_access_token(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        raise RuntimeConfigurationError("Square secret is empty")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    if isinstance(parsed, str) and parsed.strip():
+        return parsed.strip()
+    if isinstance(parsed, dict):
+        for key in (
+            "access_token",
+            "token",
+            "SQUARE_ACCESS_TOKEN",
+            "MISE_SQUARE_ACCESS_TOKEN",
+        ):
+            candidate = parsed.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+    raise RuntimeConfigurationError(
+        "Square secret must be a token string or JSON containing access_token/token"
+    )
+
+
+def read_organization_bytes(
+    store: S3WorkspaceStore, organization_id: str, key: str
+) -> bytes:
+    allowed_prefix = store.organization_prefix(organization_id) + "/"
+    if not key.startswith(allowed_prefix):
+        raise RuntimeProtocolError("plan artifact does not belong to this organization")
+    response = store.s3.get_object(Bucket=store.bucket, Key=key)
+    return response["Body"].read()
+
+
+def draft_config_prefix(
+    store: S3WorkspaceStore, organization_id: str, plan_id: str
+) -> str:
+    return (
+        f"{store.organization_prefix(organization_id)}/plans/"
+        f"{safe_segment(plan_id)}/draft-config/"
+    )
+
+
+def restore_active_config(
+    store: S3WorkspaceStore,
+    organization_id: str,
+    workspace: Path,
+    changed_files: list[str],
+) -> None:
+    prefix = store.workspace_prefix(organization_id)
+    for raw_relative in changed_files:
+        relative = safe_relative(raw_relative)
+        if relative.startswith(".mise/"):
+            raise RuntimeProtocolError("generated config may not write under .mise")
+        target = confined_workspace_path(workspace, relative)
+        key = prefix + relative
+        try:
+            response = store.s3.get_object(Bucket=store.bucket, Key=key)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in {"NoSuchKey", "404", "NotFound"}:
+                raise
+            target.unlink(missing_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(response["Body"].read())
+
+
+def confined_workspace_path(root: Path, relative: str | Path) -> Path:
+    path = Path(relative)
+    target = path.resolve() if path.is_absolute() else (root / path).resolve()
+    try:
+        target.relative_to(root.resolve())
+    except ValueError as exc:
+        raise RuntimeProtocolError(f"path escapes runtime workspace: {relative}") from exc
+    return target
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()

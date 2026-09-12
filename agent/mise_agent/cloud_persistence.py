@@ -37,6 +37,7 @@ class CloudModel(BaseModel):
 class PlanMetadata(CloudModel):
     plan_id: str
     organization_id: str
+    title: str = ""
     plan_hash: str
     status: Literal[
         "draft", "ready_for_review", "approved", "superseded", "applied", "cancelled"
@@ -47,6 +48,7 @@ class PlanMetadata(CloudModel):
     created_at: str
     approved_at: str | None = None
     approved_by: str | None = None
+    revision_id: str | None = None
 
 
 class ApprovalMetadata(CloudModel):
@@ -205,11 +207,10 @@ class S3WorkspaceStore:
         root = Path(destination).resolve()
         root.mkdir(parents=True, exist_ok=True)
         prefix = self.workspace_prefix(organization_id)
-        manifest = self._read_manifest(organization_id)
-        if manifest is not None:
-            keys = [prefix + str(PurePosixPath(path)) for path in manifest.get("files", [])]
-        else:
-            keys = list(self._list_keys(prefix))
+        # List the live prefix rather than trusting the manifest as an index.
+        # Approval may promote a newly created config file into workspace/ before
+        # the next full sync; the S3 prefix is the authoritative current view.
+        keys = list(self._list_keys(prefix))
 
         hydrated: list[str] = []
         for key in keys:

@@ -2,6 +2,24 @@
 
 This file records the decisions and milestones from the guided hackathon build.
 
+## 2026-09-12 — AgentCore deployment smoke passed
+
+- Checkpoint 2 manual operator review was accepted. The current console/operations UX is frozen for the hackathon path; deeper visual redesign is deferred until the core public demo is proven.
+- Item 8 was completed against a real AWS account and real Square sandbox data.
+- CloudFormation provisioned the private versioned S3 workspace bucket, DynamoDB metadata table, ECR runtime repository and AgentCore execution role.
+- The Square sandbox token was stored in Secrets Manager and was never uploaded into the S3 workspace.
+- The real `mise-sandbox-demo` workspace was seeded to S3 with `.mise/credentials` and `.mise/lock` excluded.
+- A Linux ARM64 multi-stage image containing the Python/Strands runtime and compiled Go `mise` binary was built and pushed to ECR.
+- `MiseFranchiseOps` deployed successfully to Amazon Bedrock AgentCore in `us-west-2` with MMDSv2 enabled.
+- The live direct-runtime smoke test returned the real four-location estate: DC 1, GA 2, TN 1.
+- Bedrock/Strands correctly stopped on the deliberately incomplete Nashville tax request and asked for the missing rate.
+- Real-cloud testing exposed a display-name/internal-key seam: the operator says `Nashville City Tax`, while Mise stores the canonical key `nashville_city_tax`. The read tool was hardened to resolve normalized display names and internal names while returning the canonical key for deterministic rendering.
+- The final smoke test found the existing tax at 3.25%, resolved only `Mise Test - Nashville` (`L05QA4ANJ1PQ5`), proposed 2.75%, and produced governed plan `plan_6744f6d4f72e` with SHA-256 `38ef632cebaf48abfdbbe81d1b55a80b2e76fab63c9cd9d2dbac575dc517de34`.
+- The Item 8 smoke test intentionally stopped before approval and made no Square/POS write.
+- GitHub Actions run #53 passed the Windows and Ubuntu test matrix, including the Linux ARM64 image build and boot health check.
+- Runtime exception logging was made explicit so handled HTTP 500s retain useful CloudWatch tracebacks.
+- Item 9 is next: deploy the public console/API and prove the complete approved Square sandbox apply → verify flow plus drift/remediation.
+
 ## 2026-09-02 — Checkpoint 1 completed
 
 - Items 1–4 have been implemented and verified.
@@ -37,10 +55,10 @@ This file records the decisions and milestones from the guided hackathon build.
 
 ### Checkpoints
 1. Boundary checkpoint — Go/Python/Strands plan path works safely. **Completed 2026-09-02.**
-2. Local product checkpoint — console + approval + rollout + verification works locally.
+2. Local product checkpoint — console + approval + rollout + verification works locally. **Accepted 2026-09-12.**
 3. Deployment checkpoint — AgentCore/public console + real Square sandbox works.
 4. Submission-ready checkpoint — public repo, diagram, video, docs and demo are all verified.
 
 ### Checklist state
-- Items 1–4 complete.
-- Item 5 in progress: S3 workspace/artifact persistence, DynamoDB metadata, organization mutation lease.
+- Items 1–8 complete.
+- Item 9 next: public console/API deployment and complete real Square sandbox demo path.

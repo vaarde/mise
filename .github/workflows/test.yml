@@ -29,6 +29,36 @@ jobs:
           cache-dependency-path: agent/pyproject.toml
       - run: python -m pip install -e "./agent[dev]"
       - run: pytest agent/tests
+      - run: python -m py_compile deploy/agentcore/deploy.py deploy/agentcore/prepare_square_secret.py deploy/agentcore/seed_workspace.py deploy/agentcore/smoke.py
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+        if: matrix.os == 'ubuntu-latest'
+      - name: Build AgentCore ARM64 image
+        if: matrix.os == 'ubuntu-latest'
+        run: docker buildx build --platform linux/arm64 -f deploy/agentcore/Dockerfile -t mise-agentcore:test --load .
+      - name: Boot AgentCore image and check health contract
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          docker run -d --name mise-agentcore-test --platform linux/arm64 -p 8080:8080 mise-agentcore:test
+          trap 'docker rm -f mise-agentcore-test >/dev/null 2>&1 || true' EXIT
+          for attempt in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:8080/ping | grep -q 'Healthy'; then
+              exit 0
+            fi
+            if ! docker inspect -f '{{.State.Running}}' mise-agentcore-test 2>/dev/null | grep -q true; then
+              echo 'AgentCore test container exited before becoming healthy'
+              docker logs mise-agentcore-test
+              exit 1
+            fi
+            sleep 1
+          done
+          echo 'AgentCore test container did not become healthy within 60 seconds'
+          docker logs mise-agentcore-test
+          exit 1
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

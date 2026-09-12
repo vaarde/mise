@@ -1,5 +1,10 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  CopyObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import {
   DeleteCommand,
   DynamoDBDocumentClient,
@@ -116,6 +121,26 @@ export class AwsDynamoMetadataStore implements MetadataStore {
     return response.Attributes as T;
   }
 
+  async allocateRevisionNumber(organizationId: string): Promise<number> {
+    const response = await this.client.send(
+      new UpdateCommand({
+        TableName: this.tableName,
+        Key: { PK: orgKey(organizationId), SK: "COUNTER#REVISION" },
+        UpdateExpression: "ADD revision_number :one SET entity_type = :type",
+        ExpressionAttributeValues: {
+          ":one": 1,
+          ":type": "revision_counter",
+        },
+        ReturnValues: "UPDATED_NEW",
+      }),
+    );
+    const value = response.Attributes?.revision_number;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new Error("revision counter did not return a number");
+    }
+    return value;
+  }
+
   async appendRolloutEvent(event: RolloutEvent): Promise<void> {
     const sequence = String(event.sequence).padStart(10, "0");
     await this.client.send(
@@ -166,6 +191,40 @@ export class AwsS3ArtifactStore implements ArtifactStore {
     );
     if (!response.Body) throw new Error(`S3 object has no body: ${key}`);
     return response.Body.transformToByteArray();
+  }
+
+  async copyPrefix(sourcePrefix: string, destinationPrefix: string): Promise<string[]> {
+    if (!sourcePrefix.endsWith("/") || !destinationPrefix.endsWith("/")) {
+      throw new Error("S3 copy prefixes must end with /");
+    }
+    const copied: string[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const page = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: sourcePrefix,
+          ContinuationToken: continuationToken,
+        }),
+      );
+      for (const object of page.Contents ?? []) {
+        const sourceKey = object.Key;
+        if (!sourceKey || sourceKey === sourcePrefix) continue;
+        const relative = sourceKey.slice(sourcePrefix.length);
+        if (!relative || relative.startsWith("../")) continue;
+        const destinationKey = destinationPrefix + relative;
+        await this.client.send(
+          new CopyObjectCommand({
+            Bucket: this.bucket,
+            Key: destinationKey,
+            CopySource: `${this.bucket}/${encodeURIComponent(sourceKey).replaceAll("%2F", "/")}`,
+          }),
+        );
+        copied.push(destinationKey);
+      }
+      continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return copied;
   }
 }
 

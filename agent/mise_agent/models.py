@@ -67,6 +67,7 @@ class IntentAnalysis(BaseModel):
 class ProposalResult(BaseModel):
     status: str
     interpretation: str
+    title: str | None = None
     clarification_question: str | None = None
     target_location_ids: list[str] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)

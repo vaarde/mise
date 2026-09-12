@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,44 @@ class ToolContext:
         self.workspace = Path(workspace)
         self.runner = runner
         self.locations = LocationIndex(workspace)
+
+
+def _normalize_resource_name(value: object) -> str:
+    """Normalize internal Mise keys and human-facing names for safe lookup."""
+    text = str(value or "").casefold().replace("_", " ").replace("-", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def find_configuration_resource(
+    workspace: str | Path,
+    resource_type: str,
+    resource_name: str,
+) -> dict[str, Any]:
+    """Find a declared resource by internal key or display name, without mutation."""
+    root = Path(workspace)
+    wanted = _normalize_resource_name(resource_name)
+
+    for path in root.rglob("*.yaml"):
+        if path.name in {"mise.yaml", "locations.yaml"}:
+            continue
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for item in data.get("resources", []):
+            if item.get("type") != resource_type:
+                continue
+            internal_name = item.get("name")
+            display_name = (item.get("properties") or {}).get("name")
+            candidates = {
+                _normalize_resource_name(internal_name),
+                _normalize_resource_name(display_name),
+            }
+            if wanted in candidates:
+                return {
+                    "file": str(path.relative_to(root)),
+                    "resource": item,
+                    "resource_key": internal_name,
+                    "display_name": display_name,
+                }
+    return {"resource": None}
 
 
 def build_read_tools(context: ToolContext) -> list[Any]:
@@ -48,15 +87,13 @@ def build_read_tools(context: ToolContext) -> list[Any]:
 
     @tool
     def inspect_configuration(resource_type: str, resource_name: str) -> dict[str, Any]:
-        """Read one declared Mise resource from YAML without changing it."""
-        for path in context.workspace.rglob("*.yaml"):
-            if path.name in {"mise.yaml", "locations.yaml"}:
-                continue
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            for item in data.get("resources", []):
-                if item.get("type") == resource_type and item.get("name") == resource_name:
-                    return {"file": str(path.relative_to(context.workspace)), "resource": item}
-        return {"resource": None}
+        """Read one declared Mise resource by internal key or display name without changing it.
+
+        Args:
+            resource_type: Mise resource type, for example square_catalog_tax.
+            resource_name: Internal Mise key or human-facing resource name.
+        """
+        return find_configuration_resource(context.workspace, resource_type, resource_name)
 
     @tool
     def check_drift() -> dict[str, Any]:

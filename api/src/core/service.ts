@@ -4,6 +4,7 @@ import type {
   ApiDependencies,
   ApprovalRecord,
   PlanRecord,
+  RevisionRecord,
   RolloutEvent,
   RolloutRecord,
 } from "./contracts.js";
@@ -27,7 +28,7 @@ export class MiseApiService {
   async estate(): Promise<Record<string, unknown>> {
     const [snapshots, revisions, rollouts] = await Promise.all([
       this.deps.metadata.list<Record<string, unknown>>(this.organizationId, "snapshot"),
-      this.deps.metadata.list<Record<string, unknown>>(this.organizationId, "revision"),
+      this.deps.metadata.list<RevisionRecord>(this.organizationId, "revision"),
       this.deps.metadata.list<RolloutRecord>(this.organizationId, "rollout"),
     ]);
     return {
@@ -44,7 +45,7 @@ export class MiseApiService {
       this.deps.metadata.list<PlanRecord>(this.organizationId, "plan"),
       this.deps.metadata.list<ApprovalRecord>(this.organizationId, "approval"),
       this.deps.metadata.list<RolloutRecord>(this.organizationId, "rollout"),
-      this.deps.metadata.list<Record<string, unknown>>(this.organizationId, "revision"),
+      this.deps.metadata.list<RevisionRecord>(this.organizationId, "revision"),
       this.deps.metadata.list<Record<string, unknown>>(this.organizationId, "snapshot"),
     ]);
     return { plans, approvals, rollouts, revisions, snapshots };
@@ -74,7 +75,6 @@ export class MiseApiService {
       prompt,
       sessionId: resolvedSession,
     });
-    // This path is intentionally incapable of approving or applying a plan.
     return { session_id: resolvedSession, response };
   }
 
@@ -82,7 +82,7 @@ export class MiseApiService {
     planId: string,
     expectedHash: string,
     approvedBy: string,
-  ): Promise<{ plan: PlanRecord; approval: ApprovalRecord }> {
+  ): Promise<{ plan: PlanRecord; approval: ApprovalRecord; revision: RevisionRecord }> {
     const plan = await this.plan(planId);
     if (plan.status !== "ready_for_review") {
       throw new ApiError(409, `plan ${planId} is ${plan.status}, not ready_for_review`);
@@ -92,14 +92,68 @@ export class MiseApiService {
     }
     await this.requireArtifactHash(plan);
 
+    const changeCount =
+      numberFromSummary(plan.summary, "to_create") +
+      numberFromSummary(plan.summary, "to_update") +
+      numberFromSummary(plan.summary, "to_delete");
+    if (changeCount > 0 && !plan.draft_config_s3_key) {
+      throw new ApiError(409, "reviewed plan is missing its draft configuration artifact");
+    }
+
     const now = this.deps.now();
+    const approver = approvedBy || "demo-operator";
+    const revisionNumber = await this.deps.metadata.allocateRevisionNumber(this.organizationId);
+    const revisionId = `rev_${String(revisionNumber).padStart(6, "0")}`;
+    const title =
+      cleanTitle(plan.title || stringFromSummary(plan.summary, "change_title")) ||
+      `Approved change ${revisionNumber}`;
+    const revisionPrefix = `${organizationPrefix(this.organizationId)}/desired-revisions/${revisionId}/`;
+
+    if (plan.draft_config_s3_key) {
+      const expectedDraftPrefix = `${organizationPrefix(this.organizationId)}/plans/${plan.plan_id}/draft-config/`;
+      if (plan.draft_config_s3_key !== expectedDraftPrefix) {
+        throw new ApiError(409, "draft configuration artifact does not belong to this plan");
+      }
+      const revisionFiles = await this.deps.artifacts.copyPrefix(
+        plan.draft_config_s3_key,
+        revisionPrefix,
+      );
+      if (changeCount > 0 && revisionFiles.length === 0) {
+        throw new ApiError(409, "draft configuration artifact is empty");
+      }
+      await this.deps.artifacts.copyPrefix(
+        plan.draft_config_s3_key,
+        `${organizationPrefix(this.organizationId)}/workspace/`,
+      );
+    }
+
+    const revision: RevisionRecord = {
+      revision_id: revisionId,
+      organization_id: this.organizationId,
+      revision_number: revisionNumber,
+      title,
+      display_name: `Revision ${revisionNumber} — ${title}`,
+      created_at: now,
+      approved_by: approver,
+      plan_id: plan.plan_id,
+      plan_hash: plan.plan_hash,
+      artifact_s3_key: revisionPrefix,
+      overrides: [],
+    };
     const approval: ApprovalRecord = {
       organization_id: this.organizationId,
       plan_id: plan.plan_id,
       plan_hash: plan.plan_hash,
       approved_at: now,
-      approved_by: approvedBy || "demo-operator",
+      approved_by: approver,
     };
+
+    await this.deps.metadata.put(
+      "revision",
+      revision.revision_id,
+      this.organizationId,
+      revision as unknown as Record<string, unknown>,
+    );
     await this.deps.metadata.put(
       "approval",
       plan.plan_id,
@@ -110,9 +164,14 @@ export class MiseApiService {
       this.organizationId,
       "plan",
       plan.plan_id,
-      { status: "approved", approved_at: now, approved_by: approval.approved_by },
+      {
+        status: "approved",
+        approved_at: now,
+        approved_by: approval.approved_by,
+        revision_id: revision.revision_id,
+      },
     );
-    return { plan: updated, approval };
+    return { plan: updated, approval, revision };
   }
 
   async startApply(planId: string, previousRolloutId?: string): Promise<RolloutRecord> {
@@ -121,6 +180,22 @@ export class MiseApiService {
       throw new ApiError(409, `plan ${planId} must be approved before apply`);
     }
     await this.requireArtifactHash(plan);
+    if (!plan.revision_id) {
+      throw new ApiError(409, "approved plan has no desired-state revision");
+    }
+    const revision = await this.deps.metadata.get<RevisionRecord>(
+      this.organizationId,
+      "revision",
+      plan.revision_id,
+    );
+    if (!revision || revision.plan_id !== plan.plan_id || revision.plan_hash !== plan.plan_hash) {
+      throw new ApiError(409, "approved plan is not bound to its desired-state revision");
+    }
+    const revisions = await this.deps.metadata.list<RevisionRecord>(this.organizationId, "revision");
+    const currentRevision = latestRevision(revisions);
+    if (!currentRevision || currentRevision.revision_id !== revision.revision_id) {
+      throw new ApiError(409, "a newer desired-state revision has replaced this plan");
+    }
 
     if (previousRolloutId) {
       const previous = await this.rollout(previousRolloutId);
@@ -159,7 +234,10 @@ export class MiseApiService {
       this.organizationId,
       rollout as unknown as Record<string, unknown>,
     );
-    await this.appendEvent(rolloutId, "rollout_queued", { plan_id: plan.plan_id });
+    await this.appendEvent(rolloutId, "rollout_queued", {
+      plan_id: plan.plan_id,
+      revision_id: revision.revision_id,
+    });
 
     try {
       await this.deps.dispatcher.enqueue({
@@ -237,6 +315,23 @@ export function defaultDependencies(partial: Omit<ApiDependencies, "now" | "uuid
   };
 }
 
+function organizationPrefix(organizationId: string): string {
+  const clean = organizationId.trim();
+  if (!clean || clean.includes("/") || clean.includes("\\") || clean.includes("#")) {
+    throw new ApiError(500, "organization id is not safe for artifact storage");
+  }
+  return `organizations/${clean}`;
+}
+
+function cleanTitle(value: string | undefined): string {
+  return (value ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
+}
+
+function stringFromSummary(summary: Record<string, unknown> | undefined, key: string): string {
+  const value = summary?.[key];
+  return typeof value === "string" ? value : "";
+}
+
 function numberFromSummary(summary: Record<string, unknown> | undefined, key: string): number {
   const value = summary?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -249,11 +344,7 @@ function latestBy<T, K extends keyof T>(items: T[], key: K): T | null {
   );
 }
 
-function latestRevision<T extends Record<string, unknown>>(items: T[]): T | null {
+function latestRevision<T extends { revision_number: number }>(items: T[]): T | null {
   if (!items.length) return null;
-  return (
-    [...items].sort(
-      (a, b) => Number(b.revision_number ?? 0) - Number(a.revision_number ?? 0),
-    )[0] ?? null
-  );
+  return [...items].sort((a, b) => b.revision_number - a.revision_number)[0] ?? null;
 }
