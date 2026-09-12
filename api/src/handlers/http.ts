@@ -2,7 +2,9 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from "
 import { MutationAccessError, requireMutationAccess } from "../auth/demoAccess.js";
 import { ApiError, formatSse, MiseApiService } from "../core/service.js";
 
-export function createHttpHandler(service: MiseApiService, mutationSecret: string) {
+type MutationSecretProvider = string | (() => Promise<string>);
+
+export function createHttpHandler(service: MiseApiService, mutationSecret: MutationSecretProvider) {
   return async function handler(
     event: APIGatewayProxyEventV2,
   ): Promise<APIGatewayProxyStructuredResultV2> {
@@ -53,7 +55,7 @@ export function createHttpHandler(service: MiseApiService, mutationSecret: strin
 
       const approveMatch = path.match(/^\/plans\/([^/]+)\/approve$/);
       if (method === "POST" && approveMatch) {
-        protect(event.headers, mutationSecret);
+        await protect(event.headers, mutationSecret);
         const body = parseBody(event.body);
         const result = await service.approvePlan(
           decodeURIComponent(approveMatch[1]!),
@@ -65,14 +67,14 @@ export function createHttpHandler(service: MiseApiService, mutationSecret: strin
 
       const applyMatch = path.match(/^\/plans\/([^/]+)\/apply$/);
       if (method === "POST" && applyMatch) {
-        protect(event.headers, mutationSecret);
+        await protect(event.headers, mutationSecret);
         const rollout = await service.startApply(decodeURIComponent(applyMatch[1]!));
         return json(202, rollout);
       }
 
       const retryMatch = path.match(/^\/rollouts\/([^/]+)\/retry$/);
       if (method === "POST" && retryMatch) {
-        protect(event.headers, mutationSecret);
+        await protect(event.headers, mutationSecret);
         const rollout = await service.retryRollout(decodeURIComponent(retryMatch[1]!));
         return json(202, rollout);
       }
@@ -91,8 +93,12 @@ export function createHttpHandler(service: MiseApiService, mutationSecret: strin
   };
 }
 
-function protect(headers: Record<string, string | undefined>, secret: string): void {
-  requireMutationAccess(headers, secret);
+async function protect(
+  headers: Record<string, string | undefined>,
+  secret: MutationSecretProvider,
+): Promise<void> {
+  const expected = typeof secret === "string" ? secret : await secret();
+  requireMutationAccess(headers, expected);
 }
 
 function json(statusCode: number, value: unknown): APIGatewayProxyStructuredResultV2 {
