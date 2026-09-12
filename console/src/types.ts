@@ -101,6 +101,33 @@ export interface LocationRecord {
   exception?: string;
 }
 
+export interface DriftDiff {
+  path: string;
+  old_value?: unknown;
+  new_value?: unknown;
+}
+
+export interface LiveDriftItem {
+  full_name: string;
+  resource_type: string;
+  resource_name: string;
+  provider_id: string;
+  location_ids: string[];
+  reason: "changed" | "deleted";
+  diffs: DriftDiff[];
+}
+
+export interface LiveDriftResponse {
+  status: "ok";
+  organization_id: string;
+  drift: {
+    drifted: LiveDriftItem[];
+    checked: number;
+    last_fetch?: string;
+    last_apply?: string;
+  };
+}
+
 export interface DriftRecord {
   drift_id: string;
   location: string;
