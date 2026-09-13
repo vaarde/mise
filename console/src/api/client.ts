@@ -8,6 +8,8 @@ export class ConsoleApiError extends Error {
 }
 
 export class MiseConsoleClient {
+  private readonly planCache = new Map<string, PlanRecord>();
+
   constructor(private readonly baseUrl: string) {}
 
   get isConfigured(): boolean {
@@ -26,12 +28,25 @@ export class MiseConsoleClient {
     return this.request<LiveDriftResponse>("/drift");
   }
 
-  history(): Promise<HistoryResponse> {
-    return this.request<HistoryResponse>("/history");
+  async history(): Promise<HistoryResponse> {
+    const history = await this.request<HistoryResponse>("/history");
+    for (const plan of history.plans) this.planCache.set(plan.plan_id, plan);
+
+    // A just-created governed plan may be fetched directly before a subsequent
+    // history read observes it. Keep that explicitly fetched plan in the
+    // browser's authoritative view so refreshLive cannot snap the review panel
+    // back to an older applied plan.
+    const merged = new Map(history.plans.map((plan) => [plan.plan_id, plan]));
+    for (const [planId, plan] of this.planCache) {
+      if (!merged.has(planId)) merged.set(planId, plan);
+    }
+    return { ...history, plans: [...merged.values()] };
   }
 
-  plan(planId: string): Promise<PlanRecord> {
-    return this.request<PlanRecord>(`/plans/${encodeURIComponent(planId)}`);
+  async plan(planId: string): Promise<PlanRecord> {
+    const plan = await this.request<PlanRecord>(`/plans/${encodeURIComponent(planId)}`);
+    this.planCache.set(plan.plan_id, plan);
+    return plan;
   }
 
   rollout(rolloutId: string): Promise<RolloutRecord> {
@@ -39,14 +54,11 @@ export class MiseConsoleClient {
   }
 
   agentMessage(prompt: string, sessionId?: string): Promise<{ session_id: string; response: unknown }> {
-    // Drift review actions are intentionally independent decisions. The console
-    // generates these two prompt forms itself, so start them in a fresh agent
-    // session instead of letting earlier change/clarification context bias a
-    // remediation or policy-override proposal.
-    const freshDriftDecision =
-      /remediation for observed drift/i.test(prompt)
-      || /current Square value becomes the proposed desired state/i.test(prompt);
-    const effectiveSessionId = freshDriftDecision ? undefined : sessionId;
+    // A drift decision is a new governed decision, not a continuation of the
+    // conversational context that may have produced the previous policy. Start
+    // it fresh so stale clarification/history cannot bias remediation or an
+    // explicit decision to adopt the observed Square value.
+    const effectiveSessionId = startsFreshGovernanceDecision(prompt) ? undefined : sessionId;
 
     return this.request("/agent/messages", {
       method: "POST",
@@ -57,12 +69,14 @@ export class MiseConsoleClient {
     });
   }
 
-  approve(planId: string, expectedHash: string, accessCode: string): Promise<{ plan: PlanRecord }> {
-    return this.request(`/plans/${encodeURIComponent(planId)}/approve`, {
+  async approve(planId: string, expectedHash: string, accessCode: string): Promise<{ plan: PlanRecord }> {
+    const result = await this.request<{ plan: PlanRecord }>(`/plans/${encodeURIComponent(planId)}/approve`, {
       method: "POST",
       headers: mutationHeaders(accessCode),
       body: JSON.stringify({ expected_hash: expectedHash, approved_by: "demo-operator" }),
     });
+    this.planCache.set(result.plan.plan_id, result.plan);
+    return result;
   }
 
   apply(planId: string, accessCode: string): Promise<RolloutRecord> {
@@ -99,11 +113,18 @@ export class MiseConsoleClient {
       const message =
         payload && typeof payload === "object" && "message" in payload
           ? String((payload as { message: unknown }).message)
-          : `Request failed (${response.status})`;
+          : payload && typeof payload === "object" && "error" in payload
+            ? String((payload as { error: unknown }).error)
+            : `Request failed (${response.status})`;
       throw new ConsoleApiError(response.status, message);
     }
     return payload as T;
   }
+}
+
+export function startsFreshGovernanceDecision(prompt: string): boolean {
+  return /remediation for observed drift/i.test(prompt)
+    || /current Square value becomes the proposed desired state/i.test(prompt);
 }
 
 function mutationHeaders(accessCode: string): Record<string, string> {
