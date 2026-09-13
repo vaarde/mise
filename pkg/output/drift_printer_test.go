@@ -186,10 +186,14 @@ func TestPrintDriftJSON(t *testing.T) {
 
 func TestPrintDriftJSONWhenClean(t *testing.T) {
 	var buf bytes.Buffer
-	require.NoError(t, PrintDriftJSON(&buf, &engine.DriftResult{Checked: 7}))
+	require.NoError(t, PrintDriftJSON(&buf, &engine.DriftResult{
+		Checked: 7,
+		Drifted: []engine.ResourceDrift{},
+	}))
 
-	// A scheduled check parses this; an empty list must still be valid.
+	// The JSON contract guarantees an array, not null, for a clean report.
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
 	assert.Equal(t, float64(7), parsed["checked"])
+	assert.Equal(t, []interface{}{}, parsed["drifted"])
 }
