@@ -23,6 +23,15 @@ const paths = {
   circle: "M8 13A5 5 0 1 0 8 3a5 5 0 0 0 0 10z",
   arrow: "M3 8h10M9.5 4.5L13 8l-3.5 3.5",
   dash: "M4 8h8",
+  search: "M7 12.5A5.5 5.5 0 1 0 7 1.5a5.5 5.5 0 0 0 0 11zM11 11l3.5 3.5",
+  plus: "M8 3v10M3 8h10",
+  back: "M13 8H3M6.5 4.5L3 8l3.5 3.5",
+  calendar: "M2.5 4h11v9.5h-11zM2.5 7h11M5.5 2.5v3M10.5 2.5v3",
+  doc: "M4 1.5h5.5L12.5 4.5v10h-8.5zM9 1.5v3.5h3.5M6 8.5h4.5M6 11h4.5",
+  sparkle: "M8 2l1.4 4.6L14 8l-4.6 1.4L8 14l-1.4-4.6L2 8l4.6-1.4z",
+  flask: "M6 2h4M6.5 2v4L3 13.5h10L9.5 6V2",
+  rollout: "M2.5 8h8M8 4.5L11.5 8 8 11.5M13.5 3v10",
+  filter: "M8 3v10M3 8h10",
 } as const;
 
 export type IconName = keyof typeof paths;
@@ -66,6 +75,56 @@ export function Badge({ tone = "neutral", children, icon }: { tone?: Tone; child
   );
 }
 
+export function CopyField({ value, display, label }: { value: string; display?: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <span className="copy-field">
+      <code title={value}>{display ?? value}</code>
+      <button
+        type="button"
+        className="icon-btn"
+        aria-label={copied ? `${label} copied` : `Copy ${label}`}
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(value);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          } catch {
+            /* clipboard unavailable; value remains visible in the title */
+          }
+        }}
+      >
+        <Icon name={copied ? "check" : "copy"} size={13} />
+      </button>
+    </span>
+  );
+}
+
+export function Tabs<T extends string>({ tabs, value, onChange, label }: { tabs: Array<{ key: T; label: string }>; value: T; onChange: (key: T) => void; label: string }) {
+  return (
+    <div className="tabs" role="tablist" aria-label={label}>
+      {tabs.map((tab) => (
+        <button key={tab.key} type="button" role="tab" aria-selected={tab.key === value} onClick={() => onChange(tab.key)}>
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function StatusCards<T extends string>({ cards, value, onChange, label }: { cards: Array<{ key: T; label: string; count: number | string; icon?: IconName }>; value: T; onChange: (key: T) => void; label: string }) {
+  return (
+    <div className="status-cards" role="group" aria-label={label}>
+      {cards.map((card) => (
+        <button key={card.key} type="button" className="status-card" aria-pressed={card.key === value} onClick={() => onChange(card.key)}>
+          <span>{card.icon && <Icon name={card.icon} size={13} />}{card.label}</span>
+          <strong>{card.count}</strong>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function Fingerprint({ hash, label = "Plan fingerprint" }: { hash: string; label?: string }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -83,10 +142,10 @@ export function Fingerprint({ hash, label = "Plan fingerprint" }: { hash: string
       <code className={expanded ? "full" : ""} title={hash} aria-label={`${label} ${hash}`}>
         sha256:{expanded ? hash : `${hash.slice(0, 12)}…${hash.slice(-10)}`}
       </code>
-      <button type="button" className="btn link" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+      <button type="button" className="link" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
         {expanded ? "Less" : "Full"}
       </button>
-      <button type="button" className="btn link" onClick={() => void copy()}>
+      <button type="button" className="link" onClick={() => void copy()}>
         {copied ? "Copied" : "Copy"}
       </button>
       <span className="sr-only" aria-live="polite">{copied ? "Fingerprint copied" : ""}</span>
@@ -130,10 +189,10 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
 
 export function Banner({ tone, children, onDismiss }: { tone: "critical" | "info" | "attention" | "positive"; children: ReactNode; onDismiss?: () => void }) {
   return (
-    <div className={`banner ${tone}`} role={tone === "critical" ? "alert" : "status"}>
+    <div className={`callout ${tone}`} role={tone === "critical" ? "alert" : "status"}>
       <div>{children}</div>
       {onDismiss && (
-        <button type="button" className="btn link" onClick={onDismiss} aria-label="Dismiss">
+        <button type="button" className="icon-btn" onClick={onDismiss} aria-label="Dismiss">
           <Icon name="cross" size={14} />
         </button>
       )}
@@ -191,7 +250,10 @@ export function Dialog({
   return (
     <div className="scrim" onMouseDown={onClose}>
       <div ref={ref} className="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} onMouseDown={(event) => event.stopPropagation()}>
-        <div className="dialog-head"><h2 id={titleId}>{title}</h2></div>
+        <div className="dialog-head">
+          <h2 id={titleId}>{title}</h2>
+          <button type="button" className="icon-btn" aria-label="Close" onClick={() => closeRef.current()}><Icon name="cross" size={14} /></button>
+        </div>
         <div className="dialog-body">{children}</div>
         <div className="dialog-foot">{footer}</div>
       </div>

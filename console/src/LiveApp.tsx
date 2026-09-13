@@ -8,6 +8,7 @@ import {
   auditEntries,
   differencePrompt,
   differencesFromConformance,
+  formatTime,
   isPolicyOnly,
   locationNameMap,
   nextAction,
@@ -20,6 +21,7 @@ import {
 import {
   currentDifferences,
   DifferencesPage,
+  LocationDetailPage,
   LocationsPage,
   OverviewPage,
   type CheckState,
@@ -48,6 +50,7 @@ const STATUS_RANK: Record<PlanRecord["status"], number> = {
 
 export default function LiveApp() {
   const [page, setPage] = useState<ConsolePage>("overview");
+  const [locationId, setLocationId] = useState<string | null>(null);
   const [estate, setEstate] = useState<EstateResponse>(emptyEstate);
   const [history, setHistory] = useState<HistoryResponse>(emptyHistory);
   const [details, setDetails] = useState<Record<string, PlanRecord>>({});
@@ -274,128 +277,184 @@ export default function LiveApp() {
   const revisionPlan = estate.desired_revision?.plan_id ? mergedPlan(estate.desired_revision.plan_id, history, details) : null;
   const verified = rollout?.status === "converged" && rolloutPlan ? { rollout, plan: rolloutPlan } : null;
   const orgName = friendlyOrgName(estate.organization_id);
+  const planIds = [...new Set([...history.plans.map((plan) => plan.plan_id), ...Object.keys(details)])];
+  const allPlans = planIds.map((id) => mergedPlan(id, history, details)).filter((plan): plan is PlanRecord => Boolean(plan));
+
+  // A location's plan list needs every plan's scope, which only plan detail carries.
+  useEffect(() => {
+    if (!locationId) return;
+    for (const plan of history.plans) if (!details[plan.plan_id]) void ensureDetail(plan.plan_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationId, history.plans.length]);
+
+  function go(target: ConsolePage) {
+    setLocationId(null);
+    setPage(target);
+    window.scrollTo({ top: 0 });
+  }
 
   function openPlan(planId: string) {
     setActivePlanId(planId);
-    setPage("changes");
+    go("changes");
   }
 
-  const nav: Array<{ key: ConsolePage; label: string; icon: IconName; count?: string; attention?: boolean }> = [
+  function openLocation(id: string) {
+    setPage("locations");
+    setLocationId(id);
+    window.scrollTo({ top: 0 });
+  }
+
+  const nav: Array<{ key: ConsolePage; label: string; icon: IconName; count?: string; tone?: "attention" | "ok" }> = [
     { key: "overview", label: "Overview", icon: "overview" },
-    { key: "changes", label: "Changes", icon: "changes", count: phase === "review" ? "Review" : undefined, attention: phase === "review" },
+    { key: "changes", label: "Changes", icon: "changes", count: phase === "review" ? "1" : undefined, tone: phase === "review" ? "attention" : undefined },
     {
       key: "drift",
       label: "Differences",
       icon: "differences",
-      count: differences ? (differences.length ? String(differences.length) : "✓") : conformance.status === "checking" ? "…" : undefined,
-      attention: Boolean(differences?.length),
+      count: differences ? String(differences.length) : undefined,
+      tone: differences ? (differences.length ? "attention" : "ok") : undefined,
     },
     { key: "locations", label: "Locations", icon: "locations", count: estate.observed_estate?.location_count ? String(estate.observed_estate.location_count) : undefined },
   ];
 
   return (
-    <div className="shell">
-      <aside className="side">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden>M</span>
-          <span className="brand-text"><strong>Mise</strong><span>{orgName || "Operations control"}</span></span>
-        </div>
-        <nav className="nav" aria-label="Primary">
-          {nav.map((item) => (
-            <button key={item.key} type="button" className="nav-link" aria-current={page === item.key ? "page" : undefined} onClick={() => setPage(item.key)}>
-              <Icon name={item.icon} />
-              <span>{item.label}</span>
-              {item.count && <span className={`nav-count ${item.attention ? "attention" : ""}`}>{item.count}</span>}
-            </button>
-          ))}
-        </nav>
-        <div className="side-foot">
-          <button type="button" className={`lock ${accessCode ? "unlocked" : ""}`} onClick={() => setDialog({ kind: "unlock" })}>
-            <Icon name={accessCode ? "unlock" : "lock"} />
-            <span>
-              <strong>{accessCode ? "Updates enabled" : "Read-only"}</strong>
-              <span>{accessCode ? "Code sent only with approve and rollout" : "Enter operator code to approve or roll out"}</span>
-            </span>
-          </button>
-          <div className="conn" role="status">
-            <span className={`dot ${loading ? "" : connected ? "on" : "off"}`} aria-hidden />
-            <span>
-              <strong>{loading ? "Connecting…" : connected ? "Live" : "Disconnected"}</strong>
-              {connected ? "AWS-backed · Square Sandbox" : "No stand-in data is shown"}
-            </span>
+    <>
+      <div className="env-strip" role="note">
+        <span>{orgName || "Mise"}</span>
+        <span className="mid"><Icon name="flask" size={14} /><b>Square Sandbox</b><span className="extra"> · test locations, not a live restaurant</span></span>
+        <span className="right">
+          <span className={`dot ${loading ? "" : connected ? "on" : "off"}`} aria-hidden />
+          {loading ? "Connecting…" : connected ? "Live AWS data" : "Disconnected"}
+        </span>
+      </div>
+      <div className="shell">
+        <aside className="side">
+          <div className="account">
+            <span className="brand-mark" aria-hidden>M</span>
+            <span><strong>Mise</strong><span>{orgName || "Operations control"}</span></span>
           </div>
-        </div>
-      </aside>
+          <nav className="nav" aria-label="Primary">
+            {nav.map((item) => (
+              <button key={item.key} type="button" className="nav-link" aria-current={page === item.key ? "page" : undefined} onClick={() => go(item.key)}>
+                <Icon name={item.icon} />
+                <span>{item.label}</span>
+                {item.count && <span className={`nav-count ${item.tone ?? ""}`}>{item.count}</span>}
+              </button>
+            ))}
+          </nav>
+          <div className="side-foot">
+            <div className="conn" role="status">
+              <span className={`dot ${loading ? "" : connected ? "on" : "off"}`} aria-hidden />
+              <span><strong>{loading ? "Connecting…" : connected ? "Connected" : "Disconnected"}</strong><br />No stand-in data is ever shown</span>
+            </div>
+          </div>
+        </aside>
 
-      <main className="main">
-        <div className="topbar">
-          <div className="crumbs">
-            <span>{orgName}</span><Icon name="chevron" size={12} /><strong>{pageTitle(page)}</strong>
+        <main className="main">
+          <div className="topbar">
+            <SearchBox
+              estate={estate}
+              plans={allPlans}
+              differences={differences ?? []}
+              onLocation={openLocation}
+              onPlan={openPlan}
+              onDifferences={() => go("drift")}
+            />
+            <div className="topbar-right">
+              <button
+                type="button"
+                className="switch"
+                role="switch"
+                aria-checked={Boolean(accessCode)}
+                onClick={() => setDialog({ kind: "unlock" })}
+                title={accessCode ? "Operator code set for this tab" : "Enter operator code to approve or roll out"}
+              >
+                Updates <span className="track" aria-hidden />
+              </button>
+              <button className={`icon-btn ${loading ? "spin" : ""}`} onClick={() => void refreshLive({ conformance: true })} disabled={loading} aria-label="Refresh live data">
+                <Icon name="refresh" />
+              </button>
+            </div>
           </div>
-          <div className="topbar-right">
-            <span className="env">Sandbox</span>
-            <button className="btn" onClick={() => void refreshLive({ conformance: true })} disabled={loading}>
-              <Icon name="refresh" size={14} /> {loading ? "Refreshing" : "Refresh"}
-            </button>
-          </div>
-        </div>
 
-        {notice && (
-          <div className="notice-wrap">
-            <Banner tone={notice.tone} onDismiss={() => setNotice(null)}><p>{notice.text}</p></Banner>
-          </div>
-        )}
+          {notice && (
+            <div className="notice-wrap">
+              <Banner tone={notice.tone} onDismiss={() => setNotice(null)}><span>{notice.text}</span></Banner>
+            </div>
+          )}
 
-        {page === "overview" && (
-          <OverviewPage
-            connected={connected}
-            loading={loading}
-            estate={estate}
-            conformance={conformance}
-            rollout={rollout}
-            rolloutPlan={rolloutPlan}
-            revisionPlan={revisionPlan}
-            next={next}
-            onGo={setPage}
-            onOpenPlan={openPlan}
-          />
-        )}
-        {page === "changes" && (
-          <ChangesPage
-            estate={estate}
-            turns={turns}
-            prompt={prompt}
-            setPrompt={setPrompt}
-            agentBusy={agentBusy}
-            decision={decision}
-            onCancelDecision={() => { setDecision(null); setPrompt(""); }}
-            onSubmit={submitPrompt}
-            plan={activePlan}
-            phase={phase}
-            rollout={activeRollout}
-            revisions={history.revisions}
-            unlocked={Boolean(accessCode)}
-            actionBusy={actionBusy}
-            onApprove={() => setDialog({ kind: "approve" })}
-            onApply={() => setDialog({ kind: "apply" })}
-            onRetry={() => setDialog({ kind: "retry" })}
-            onOpenDifferences={() => { setPage("drift"); void checkConformance(); }}
-          />
-        )}
-        {page === "drift" && (
-          <DifferencesPage
-            estate={estate}
-            conformance={conformance}
-            audit={audit}
-            onCheck={() => void checkConformance()}
-            onLoadAudit={() => void loadAudit()}
-            onDecide={decide}
-          />
-        )}
-        {page === "locations" && (
-          <LocationsPage estate={estate} conformance={conformance} verified={verified} revisions={history.revisions} onGo={setPage} />
-        )}
-      </main>
+          {page === "overview" && (
+            <OverviewPage
+              connected={connected}
+              loading={loading}
+              estate={estate}
+              conformance={conformance}
+              rollout={rollout}
+              rolloutPlan={rolloutPlan}
+              revisionPlan={revisionPlan}
+              plans={allPlans}
+              rollouts={history.rollouts}
+              next={next}
+              onGo={go}
+              onOpenPlan={openPlan}
+              onOpenLocation={openLocation}
+            />
+          )}
+          {page === "changes" && (
+            <ChangesPage
+              estate={estate}
+              turns={turns}
+              prompt={prompt}
+              setPrompt={setPrompt}
+              agentBusy={agentBusy}
+              decision={decision}
+              onCancelDecision={() => { setDecision(null); setPrompt(""); }}
+              onSubmit={submitPrompt}
+              plan={activePlan}
+              phase={phase}
+              rollout={activeRollout}
+              plans={allPlans}
+              rollouts={history.rollouts}
+              latestRollout={rollout}
+              revisions={history.revisions}
+              unlocked={Boolean(accessCode)}
+              actionBusy={actionBusy}
+              onSelectPlan={(planId) => setActivePlanId(planId)}
+              onApprove={() => setDialog({ kind: "approve" })}
+              onApply={() => setDialog({ kind: "apply" })}
+              onRetry={() => setDialog({ kind: "retry" })}
+              onOpenDifferences={() => { go("drift"); void checkConformance(); }}
+            />
+          )}
+          {page === "drift" && (
+            <DifferencesPage
+              estate={estate}
+              conformance={conformance}
+              audit={audit}
+              onCheck={() => void checkConformance()}
+              onLoadAudit={() => void loadAudit()}
+              onDecide={decide}
+            />
+          )}
+          {page === "locations" && !locationId && (
+            <LocationsPage estate={estate} conformance={conformance} verified={verified} onOpenLocation={openLocation} />
+          )}
+          {page === "locations" && locationId && (
+            <LocationDetailPage
+              locationId={locationId}
+              estate={estate}
+              conformance={conformance}
+              verified={verified}
+              plans={allPlans}
+              rollouts={history.rollouts}
+              latestRollout={rollout}
+              onBack={() => setLocationId(null)}
+              onGo={go}
+              onOpenPlan={openPlan}
+            />
+          )}
+        </main>
+      </div>
 
       {dialog?.kind === "unlock" && (
         <UnlockDialog accessCode={accessCode} onSave={(code) => { setAccessCode(code); setDialog(null); }} onClose={() => setDialog(null)} />
@@ -411,6 +470,106 @@ export default function LiveApp() {
           onConfirm={(code) => { setAccessCode(code); void runProtected(dialog, code); }}
           onClose={() => setDialog(null)}
         />
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Search — Stripe's top search, over real loaded records only
+
+function SearchBox(props: {
+  estate: EstateResponse;
+  plans: PlanRecord[];
+  differences: Difference[];
+  onLocation: (id: string) => void;
+  onPlan: (id: string) => void;
+  onDifferences: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listId = "search-results";
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+      if (event.key === "/" && !typing) {
+        event.preventDefault();
+        inputRef.current?.focus();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const results: Array<{ group: string; label: string; meta: string; run: () => void }> = [];
+  if (q) {
+    for (const location of props.estate.observed_estate?.locations ?? []) {
+      if (`${location.name} ${location.state ?? ""} ${location.metadata?.city ?? ""} ${location.id}`.toLowerCase().includes(q)) {
+        results.push({ group: "Locations", label: location.name, meta: location.state ?? "", run: () => props.onLocation(location.id) });
+      }
+    }
+    for (const plan of props.plans) {
+      if (`${plan.title ?? ""} ${plan.plan_id}`.toLowerCase().includes(q)) {
+        results.push({ group: "Plans", label: plan.title || plan.plan_id, meta: formatTime(plan.created_at), run: () => props.onPlan(plan.plan_id) });
+      }
+    }
+    for (const item of props.differences) {
+      if (`${item.resourceLabel} ${item.property}`.toLowerCase().includes(q)) {
+        results.push({ group: "Differences", label: `${item.resourceLabel} · ${item.property}`, meta: `${item.approved} → ${item.squareNow}`, run: props.onDifferences });
+      }
+    }
+  }
+  const shown = results.slice(0, 12);
+
+  function pick(index: number) {
+    const result = shown[index];
+    if (!result) return;
+    result.run();
+    setQuery("");
+    setOpen(false);
+    inputRef.current?.blur();
+  }
+
+  return (
+    <div className="search" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false); }}>
+      <Icon name="search" />
+      <input
+        ref={inputRef}
+        type="search"
+        role="combobox"
+        aria-expanded={open && Boolean(q)}
+        aria-controls={listId}
+        aria-activedescendant={open && shown[active] ? `search-opt-${active}` : undefined}
+        aria-label="Search locations, plans and differences"
+        placeholder="Search locations, plans, differences"
+        value={query}
+        onChange={(event) => { setQuery(event.target.value); setActive(0); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") { event.preventDefault(); setActive((i) => Math.min(i + 1, shown.length - 1)); }
+          else if (event.key === "ArrowUp") { event.preventDefault(); setActive((i) => Math.max(i - 1, 0)); }
+          else if (event.key === "Enter") { event.preventDefault(); pick(active); }
+          else if (event.key === "Escape") { setOpen(false); inputRef.current?.blur(); }
+        }}
+      />
+      {!query && <kbd aria-hidden>/</kbd>}
+      {open && q && (
+        <div className="search-pop" id={listId} role="listbox">
+          {shown.length === 0 && <div className="none">No matches for “{query}”</div>}
+          {shown.map((result, index) => (
+            <div key={`${result.group}-${index}`}>
+              {(index === 0 || shown[index - 1]!.group !== result.group) && <h4>{result.group}</h4>}
+              <button id={`search-opt-${index}`} type="button" role="option" aria-selected={index === active} onMouseEnter={() => setActive(index)} onClick={() => pick(index)}>
+                <span>{result.label}</span><span>{result.meta}</span>
+              </button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
