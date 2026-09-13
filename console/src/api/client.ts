@@ -39,9 +39,21 @@ export class MiseConsoleClient {
   }
 
   agentMessage(prompt: string, sessionId?: string): Promise<{ session_id: string; response: unknown }> {
+    // Drift review actions are intentionally independent decisions. The console
+    // generates these two prompt forms itself, so start them in a fresh agent
+    // session instead of letting earlier change/clarification context bias a
+    // remediation or policy-override proposal.
+    const freshDriftDecision =
+      /remediation for observed drift/i.test(prompt)
+      || /current Square value becomes the proposed desired state/i.test(prompt);
+    const effectiveSessionId = freshDriftDecision ? undefined : sessionId;
+
     return this.request("/agent/messages", {
       method: "POST",
-      body: JSON.stringify({ prompt, ...(sessionId ? { session_id: sessionId } : {}) }),
+      body: JSON.stringify({
+        prompt,
+        ...(effectiveSessionId ? { session_id: effectiveSessionId } : {}),
+      }),
     });
   }
 
