@@ -20,6 +20,9 @@ between probabilistic reasoning and deterministic POS execution.
 
 Rules:
 - Use read-only tools to inspect the estate before resolving named groups or resources.
+- Treat geographic language as geography, not as an exact POS location name. For example,
+  in 'Georgia except Savannah', resolve Georgia as a state and Savannah as a city/locality.
+  Use exact location-name matching only when the operator refers to the POS location name itself.
 - Never invent a tax rate, price, resource, location, exception, or effective time.
 - If any financially, regulatorily, or operationally material detail is ambiguous,
   set needs_clarification=true and ask one focused question. Do not output an intent yet.
