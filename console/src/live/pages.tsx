@@ -65,17 +65,12 @@ export function OverviewPage(props: {
 
   return (
     <div className="page">
-      <header className="page-head" style={{ marginBottom: 6 }}><h1>Home</h1></header>
-      <div className="intro"><p>See whether Square matches the setup you approved, at every location.</p></div>
-
       <section className={`hero ${headline.tone}`} aria-live="polite">
         <div>
-          <span className="eyebrow"><Icon name={headline.icon} />Your approved setup compared with Square</span>
-          <h2>{headline.title}</h2>
+          <h1 className="hero-title"><Icon name={headline.icon} />{headline.title}</h1>
           <p>{headline.detail}</p>
           <div className="actions">
             <NextActionButton next={props.next} onGo={props.onGo} onOpenPlan={props.onOpenPlan} />
-            <button className="link" onClick={() => props.onGo("drift")}>See differences <Icon name="arrow" size={13} /></button>
           </div>
         </div>
         <div className="card side-card">
@@ -85,8 +80,7 @@ export function OverviewPage(props: {
               <dt>Version</dt><dd>{revision.revision_number}</dd>
               <dt>Last change</dt><dd>{revision.title || revision.display_name}</dd>
               <dt>Approved</dt><dd>{formatTime(revision.created_at)}</dd>
-              {props.revisionPlan && <><dt>Type</dt><dd>{isPolicyOnly(props.revisionPlan) ? "Setup only, Square already matched" : "Required a Square update"}</dd></>}
-              {revision.plan_hash && <><dt>Approval code</dt><dd><CopyField value={revision.plan_hash} display={`${revision.plan_hash.slice(0, 14)}...`} label="approval code" /></dd></>}
+              <dt>Last sent</dt><dd>{rollout ? <button className="link" onClick={() => props.onOpenPlan(rollout.plan_id)}>{rolloutStatusLabel(rollout.status).label}, {formatTime(rollout.updated_at)}</button> : "Nothing sent yet"}</dd>
             </dl>
           ) : (
             <p className="muted" style={{ margin: 0 }}>{props.loading ? <span className="skeleton" /> : "Nothing has been approved yet."}</p>
@@ -94,53 +88,15 @@ export function OverviewPage(props: {
         </div>
       </section>
 
-      <section className="sec" aria-labelledby="now-title">
-        <div className="sec-head"><h2 id="now-title">Right now</h2></div>
-        <div className="figures">
-          <div className="left">
-            <div className="figure-block">
-              <span>Locations</span>
-              <strong>{locations.length || 0}</strong>
-              <small>{states.map(([state, count]) => `${state} ${count}`).join(", ") || "None loaded"}</small>
-            </div>
-            <div className="figure-block">
-              <span>Settings checked</span>
-              <strong>{conformance.status === "ok" ? conformance.value.checked : <span className="skeleton" style={{ width: 40, height: 20 }} />}</strong>
-              <small>{conformance.status === "ok" ? `Checked ${formatTime(conformance.checkedAt)}` : conformance.status === "error" ? "Could not check" : "Checking Square..."}</small>
-            </div>
-            <div className="figure-block">
-              <span>Differences</span>
-              <strong>{differences ? differences.length : NOT_YET}</strong>
-              <small>{differences ? (differences.length ? "Need your decision" : "Everything matches") : "Not checked yet"}</small>
-            </div>
-          </div>
-          <div className="right">
-            <div className="figure-block">
-              <span>Last update sent to Square</span>
-              {rollout ? (
-                <>
-                  <strong style={{ fontSize: 17, fontWeight: 600 }}>{props.rolloutPlan?.title || rollout.rollout_id}</strong>
-                  <div style={{ margin: "6px 0 4px" }}><Badge tone={rolloutStatusLabel(rollout.status).tone}>{rolloutStatusLabel(rollout.status).label}</Badge></div>
-                  <small>{rolloutSentence(rollout)} {formatTime(rollout.updated_at)}</small>
-                  <button className="link" style={{ marginTop: 8, fontSize: 14 }} onClick={() => props.onOpenPlan(rollout.plan_id)}>View plan</button>
-                </>
-              ) : (
-                <strong style={{ fontSize: 15, color: "var(--muted)" }}>{props.loading ? "Loading..." : "Nothing sent yet"}</strong>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
-
       <section className="sec" aria-labelledby="ov-title">
-        <div className="sec-head"><h2 id="ov-title">At a glance</h2></div>
+        <h2 id="ov-title" className="sr-only">At a glance</h2>
         <div className="widgets">
           <article className="card widget">
             <h3>Differences</h3>
             <div className="figure">{differences ? differences.length : NOT_YET}</div>
             <ul>
               {differences === null && <li><span className="muted">{conformance.status === "error" ? "Could not check Square" : "Checking Square..."}</span></li>}
-              {differences?.length === 0 && <li><span className="grow"><strong>Everything matches</strong><span>Square has the approved values</span></span><Badge tone="positive">Matches</Badge></li>}
+              {differences?.length === 0 && <li><span className="grow"><strong>Everything matches</strong></span><Badge tone="positive">Matches</Badge></li>}
               {differences?.slice(0, 4).map((item) => (
                 <li key={item.id}>
                   <button className="grow" onClick={() => props.onGo("drift")}>
@@ -219,18 +175,18 @@ function overviewHeadline(props: Parameters<typeof OverviewPage>[0]): { tone: To
   const revision = props.estate.desired_revision;
   const count = props.estate.observed_estate?.location_count ?? 0;
   const label = revision ? `version ${revision.revision_number}` : "the approved setup";
-  if (!props.connected && !props.loading) return { tone: "critical", icon: "alert", title: "Mise can't be reached right now", detail: "We never show sample data in its place. Try refreshing in a moment." };
+  if (!props.connected && !props.loading) return { tone: "critical", icon: "alert", title: "Mise can't be reached right now", detail: "Try refreshing in a moment." };
   if (props.next.kind === "rollout_in_progress") return { tone: "info", icon: "rollout", title: "An update is being sent to Square", detail: props.rollout ? rolloutSentence(props.rollout) : "" };
   if (!revision) return { tone: "neutral", icon: "info", title: props.loading ? "Loading your locations..." : "No setup has been approved yet", detail: "Make a change and approve it to create your first approved setup." };
   const c = props.conformance;
   if (c.status === "ok") {
     const n = c.value.differences.length;
     return n
-      ? { tone: "attention", icon: "diamond", title: `Square is different from ${label} in ${n} place${n === 1 ? "" : "s"}`, detail: "For each one, choose whether to put back the approved value or keep what Square has. Either way, nothing changes until it is approved." }
-      : { tone: "positive", icon: "check", title: `Square matches ${label}`, detail: `All ${c.value.checked} settings Mise manages are correct across your ${count} locations.` };
+      ? { tone: "attention", icon: "diamond", title: `Square is different from ${label} in ${n} place${n === 1 ? "" : "s"}`, detail: "Choose whether to put back the approved value or keep what Square has." }
+      : { tone: "positive", icon: "check", title: `Square matches ${label}`, detail: `${c.value.checked} settings checked across ${count} locations.` };
   }
   if (c.status === "error") return { tone: "attention", icon: "alert", title: "Couldn't compare Square with your approved setup", detail: c.message };
-  return { tone: "info", icon: "refresh", title: `Checking Square against ${label}...`, detail: "Mise is reading each setting from Square. This takes a few seconds." };
+  return { tone: "info", icon: "refresh", title: `Checking Square against ${label}...`, detail: "This takes a few seconds." };
 }
 
 function NextActionButton({ next, onGo, onOpenPlan }: { next: NextAction; onGo: Go; onOpenPlan: (planId: string) => void }) {
@@ -288,7 +244,6 @@ export function DifferencesPage(props: {
 
   return (
     <div className="page">
-      <Breadcrumbs items={[{ label: "Home", onClick: props.onHome }, { label: "Differences" }]} />
       <header className="page-head" style={{ marginBottom: 12 }}><h1>Differences</h1></header>
 
       <Tabs
@@ -306,9 +261,8 @@ export function DifferencesPage(props: {
         <>
           <div className="intro">
             <p>
-              These are settings where Square no longer matches {version}.
-              {checked !== null && ` Mise checked ${checked} settings and ${Math.max(0, checked - differingResources)} are correct.`}
-              {" "}Mise never fixes these on its own.
+              Where Square no longer matches {version}.
+              {checked !== null && ` ${Math.max(0, checked - differingResources)} of ${checked} settings match.`}
             </p>
             <span className="btn-row">
               {justUpdated && <span className="updated-flash" role="status"><Icon name="check" size={13} />Updated just now</span>}
@@ -322,13 +276,13 @@ export function DifferencesPage(props: {
             <div className="callout critical"><div><b><Icon name="alert" size={14} />Couldn't check Square</b><span>{conformance.message} The list below may be out of date.</span></div></div>
           )}
 
-          {shown === null && <div className="empty">{checking && <Spinner size={22} label="Checking Square" />}<strong>{checking ? "Checking Square..." : "Not checked yet"}</strong><p>Mise reads each setting it manages from Square and compares it with the approved value.</p></div>}
+          {shown === null && <div className="empty">{checking && <Spinner size={22} label="Checking Square" />}<strong>{checking ? "Checking Square..." : "Not checked yet"}</strong></div>}
 
           {shown && shown.length === 0 && (
             <div className="all-matched">
               <span className="glyph"><Icon name="check" size={22} /></span>
               <strong>Everything matches</strong>
-              <p>Square has the approved value for every setting Mise manages. There is nothing to decide.</p>
+              <p>Nothing to decide.</p>
             </div>
           )}
 
@@ -359,7 +313,6 @@ export function DifferencesPage(props: {
                           <dt>Type</dt><dd>{item.resourceKind}{item.affectsPrices ? ", affects what customers pay" : ""}</dd>
                           <dt>Locations</dt><dd>{where}</dd>
                           {item.providerId && <><dt>Square ID</dt><dd><CopyField value={item.providerId} label="Square ID" /></dd></>}
-                          <dt>Setting name</dt><dd className="mono">{item.resourceName}.{item.path}</dd>
                         </dl>
                       </div>
                       <div>
@@ -369,9 +322,9 @@ export function DifferencesPage(props: {
                           value={selected}
                           onChange={(key) => setChoice((current) => ({ ...current, [item.id]: key }))}
                           options={[
-                            { key: "restore", title: `Put back ${item.approved}`, description: "Square was changed outside Mise. Prepare a plan that sets it back to the approved value." },
+                            { key: "restore", title: `Put back ${item.approved}`, description: "Set Square back to the approved value." },
                             ...(item.kind === "changed"
-                              ? [{ key: "adopt" as const, title: `Keep ${item.squareNow}`, description: `The change in Square was intended. Prepare a plan that makes ${item.squareNow} the approved value.` }]
+                              ? [{ key: "adopt" as const, title: `Keep ${item.squareNow}`, description: `The change was intended. Make it the approved value.` }]
                               : []),
                           ]}
                         />
@@ -379,7 +332,6 @@ export function DifferencesPage(props: {
                           <button className="btn" onClick={() => { setChoice((current) => { const next = { ...current }; delete next[item.id]; return next; }); setOpenId(null); }}>Cancel</button>
                           <button className="btn primary" disabled={!selected} onClick={() => selected && props.onDecide(item, selected)}>Prepare plan</button>
                         </div>
-                        <p className="muted" style={{ margin: "10px 0 0", fontSize: 13, textAlign: "right" }}>This only prepares a plan. Nothing changes until it is approved.</p>
                       </div>
                     </div>
                   </AccordionItem>
@@ -399,12 +351,12 @@ function AuditView({ audit, onReload }: { audit: CheckState<AuditEntry[]>; onRel
   return (
     <>
       <div className="intro">
-        <p>A record of settings that were changed directly in Square since Mise last updated it. This is history, not a to-do list. An item can stay here even after you approved the new value.</p>
+        <p>Settings changed directly in Square since Mise last updated it. For reference only.</p>
         <button className="btn" onClick={onReload} disabled={audit.status === "checking"} aria-busy={audit.status === "checking"}>{audit.status === "checking" ? <><Spinner />Loading</> : <><Icon name="refresh" size={14} />Reload</>}</button>
       </div>
       {(audit.status === "idle" || audit.status === "checking") && <div className="empty"><Spinner size={22} label="Loading history" /><strong>Loading history...</strong></div>}
       {audit.status === "error" && <div className="empty"><strong>History is unavailable</strong><p>{audit.message}</p></div>}
-      {audit.status === "ok" && audit.value.length === 0 && <div className="empty"><strong>No outside changes</strong><p>Nothing was changed directly in Square since Mise last updated it.</p></div>}
+      {audit.status === "ok" && audit.value.length === 0 && <div className="empty"><strong>No outside changes</strong></div>}
       {audit.status === "ok" && audit.value.length > 0 && (
         <>
           <div className="table-wrap">
@@ -449,9 +401,7 @@ export function LocationsPage(props: {
 
   return (
     <div className="page">
-      <Breadcrumbs items={[{ label: "Home", onClick: props.onHome }, { label: "Locations" }]} />
-      <header className="page-head" style={{ marginBottom: 6 }}><h1>Locations</h1></header>
-      <div className="intro"><p>Every location Mise manages, and whether Square has the approved setup there.</p></div>
+      <header className="page-head" style={{ marginBottom: 16 }}><h1>Locations</h1></header>
 
       <StatusCards
         label="Filter by status"
@@ -479,14 +429,13 @@ export function LocationsPage(props: {
         <>
           <div className="table-wrap">
             <table className="grid">
-              <thead><tr><th>Location</th><th>City</th><th>State</th><th>Square</th><th>Last checked by an update</th><th className="right">ID</th></tr></thead>
+              <thead><tr><th>Location</th><th>City</th><th>State</th><th>Square</th><th>Last confirmed</th></tr></thead>
               <tbody>{filtered.map((row) => <LocationTableRow key={row.location.id} row={row} onOpen={props.onOpenLocation} />)}</tbody>
             </table>
           </div>
           <div className="results">{filtered.length} result{filtered.length === 1 ? "" : "s"}</div>
         </>
       )}
-      <p className="faint" style={{ fontSize: 13, marginTop: 16 }}>Square shares some settings across all locations, so one difference can show up at several locations.</p>
     </div>
   );
 }
@@ -498,8 +447,7 @@ function LocationTableRow({ row, onOpen }: { row: LocationRow; onOpen: (id: stri
       <td>{row.city || "Not set"}</td>
       <td>{row.location.state || "Not set"}</td>
       <td><ConformanceBadge row={row} /></td>
-      <td>{row.lastVerified ? <span><Icon name="check" size={12} /> {formatTime(row.lastVerified)}</span> : <span className="faint">Not in the last update</span>}</td>
-      <td className="right mono muted">{row.location.id}</td>
+      <td>{row.lastVerified ? <span><Icon name="check" size={12} /> {formatTime(row.lastVerified)}</span> : <span className="faint">Not yet</span>}</td>
     </tr>
   );
 }
@@ -546,14 +494,11 @@ export function LocationDetailPage(props: {
         <h1>{location.name}</h1>
         <CopyField value={location.id} label="location ID" />
       </header>
-      <div className="intro"><p>The approved setup for this location, and whether Square matches it here.</p></div>
-
       <div className="rows" style={{ borderTop: "1px solid var(--line)", paddingTop: 16 }}>
         <div className="row-set">
-          <div className="label">Status<small>Compared with the approved setup</small></div>
+          <div className="label">Status</div>
           <div className="value">
             <ConformanceBadge row={row} />
-            <span className="hint">{row.conformance === "matches" ? "Square has the approved value for every setting here." : row.conformance === "differs" ? "Some settings here do not match. See below." : "Square has not been checked yet."}</span>
           </div>
         </div>
         <div className="row-set">
@@ -561,8 +506,8 @@ export function LocationDetailPage(props: {
           <div className="value">{revision ? `Version ${revision.revision_number}: ${revision.title || revision.display_name}` : "Nothing approved yet"}</div>
         </div>
         <div className="row-set">
-          <div className="label">Last update check<small>When an update last confirmed this location</small></div>
-          <div className="value">{row.lastVerified ? formatTime(row.lastVerified) : "This location was not part of the last update"}</div>
+          <div className="label">Last confirmed</div>
+          <div className="value">{row.lastVerified ? formatTime(row.lastVerified) : "Not yet"}</div>
         </div>
         <div className="row-set">
           <div className="label">Address</div>
@@ -585,7 +530,7 @@ export function LocationDetailPage(props: {
         {differences === null ? (
           <div className="empty"><strong>Not checked yet</strong></div>
         ) : here.length === 0 ? (
-          <div className="empty"><strong>No differences</strong><p>Everything here matches the approved setup.</p></div>
+          <div className="empty"><strong>No differences</strong></div>
         ) : (
           <div className="table-wrap">
             <table className="grid">
@@ -617,7 +562,7 @@ export function LocationDetailPage(props: {
                   const badge = PHASE_BADGE[planPhase(plan, rolloutForPlan(plan.plan_id, props.rollouts, props.latestRollout), revision)];
                   return (
                     <tr key={plan.plan_id} className="row" onClick={() => props.onOpenPlan(plan.plan_id)}>
-                      <td className="strong">{plan.title || "Untitled change"}<span className="sub mono">{plan.plan_id}</span></td>
+                      <td className="strong">{plan.title || "Untitled change"}</td>
                       <td><Badge tone={badge.tone}>{badge.label}</Badge></td>
                       <td>{formatTime(plan.created_at)}</td>
                     </tr>

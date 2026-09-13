@@ -679,3 +679,46 @@ table.grid tr.detail-row td { padding: 0 10px 16px; background: var(--subtle); c
 .toasts { top: 112px; bottom: auto; }
 .request-pane .thread { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px); mask-image: linear-gradient(to bottom, transparent 0, #000 18px); padding-top: 14px; }
 @media (max-width: 860px) { .toasts { top: auto; bottom: 16px; } }
+
+/* ---------- Changes studio: centred chat, detachable plan drawer ---------- */
+.studio { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; padding-bottom: 24px; }
+.studio.panel-open { grid-template-columns: minmax(0, 1fr) minmax(360px, 440px); }
+.studio .chat { display: flex; flex-direction: column; width: 100%; max-width: 760px; margin: 0 auto; height: calc(100vh - 150px); min-height: 480px; }
+.studio .chat .convo { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.studio .chat .thread { flex: 1; overflow-y: auto; }
+.studio .chat .convo-empty { flex: 1; display: flex; flex-direction: column; justify-content: center; text-align: center; padding: 0 0 24px; }
+.studio .chat .convo-empty h1 { margin: 0 0 8px; font-size: 28px; font-weight: 700; letter-spacing: -.02em; color: var(--ink); }
+.studio .chat .convo-empty p { margin: 0; font-size: 15px; color: var(--muted); }
+.studio .chat .suggest { margin-top: 12px; }
+.studio .chat .disclaimer { text-align: center; margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+
+.panel-handle { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 20; display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--line-strong); border-right: 0; border-radius: 10px 0 0 10px; background: var(--surface); color: var(--ink); font-size: 14px; font-weight: 600; box-shadow: 0 4px 16px rgba(26, 31, 54, .10); cursor: pointer; }
+.panel-handle:hover { background: var(--subtle); }
+
+.plan-drawer { position: sticky; top: 112px; max-height: calc(100vh - 136px); overflow-y: auto; display: flex; flex-direction: column; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); box-shadow: 0 8px 28px rgba(26, 31, 54, .08); }
+.drawer-head { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; align-items: center; padding: 12px 16px 12px 20px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: 14px; color: var(--ink); }
+.drawer-close { display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: none; color: var(--text); cursor: pointer; }
+.drawer-close:hover { background: var(--subtle); }
+.plan-drawer > .pane { padding: 16px 20px 0; display: flex; flex-direction: column; }
+.plan-drawer .pv-foot { position: sticky; bottom: 0; margin: 0 -20px; }
+.drawer-empty { margin: 8px 0 16px; font-size: 14px; color: var(--muted); line-height: 1.5; }
+.tech-ids { display: grid; gap: 8px; margin-bottom: 10px; }
+.drawer-scrim { display: none; }
+
+.history { padding: 16px 20px 20px; border-top: 1px solid var(--line); }
+.history h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; text-transform: none; color: var(--muted); }
+.history-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.history-list button { display: grid; gap: 4px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; background: none; text-align: left; cursor: pointer; }
+.history-list button:hover { background: var(--subtle); }
+.history-list button.selected { background: var(--blue-tint); }
+.history-list .t { font-size: 14px; font-weight: 600; color: var(--ink); }
+.history-list .m { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+
+@media (max-width: 1100px) {
+  .studio.panel-open { grid-template-columns: minmax(0, 1fr); }
+  .plan-drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 40; width: min(440px, 100vw); max-height: none; border-radius: 0; border-width: 0 0 0 1px; }
+  .drawer-scrim { display: block; position: fixed; inset: 0; z-index: 39; background: rgba(26, 31, 54, .28); }
+}
+.plan-drawer[hidden] { display: none; }
+.hero .hero-title { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; font-size: 26px; font-weight: 700; letter-spacing: -.02em; color: var(--ink); }
+.hero .hero-title svg { flex: none; }

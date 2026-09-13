@@ -1,13 +1,12 @@
 import { FormEvent, KeyboardEvent, ReactNode, useEffect, useRef, useState } from "react";
 import type { EstateResponse, PlanRecord, RevisionRecord, RolloutRecord } from "../types.js";
-import { AccordionItem, Badge, Breadcrumbs, CopyField, Icon, RevealText, Spinner, Thinking, type IconName } from "./components.js";
+import { AccordionItem, Badge, CopyField, Icon, RevealText, Spinner, Thinking, type IconName } from "./components.js";
 import {
   formatTime,
   formatValue,
   humanizeResource,
   isPolicyOnly,
   planPhase,
-  planWrites,
   propertyLabel,
   resourceKind,
   rolloutForPlan,
@@ -54,6 +53,8 @@ export const PHASE_BADGE: Record<PlanPhase, { label: string; tone: Tone }> = {
 };
 
 type Props = {
+  panelOpen?: boolean;
+  onTogglePanel?: (open?: boolean) => void;
   estate: EstateResponse;
   turns: Turn[];
   prompt: string;
@@ -83,23 +84,37 @@ type Props = {
   onPlanArrivalShown: () => void;
 };
 
-export function ChangesPage(props: Props) {
+export function ChangesPage(outer: Props) {
+  const [panelOpen, setPanelOpen] = useState(Boolean(outer.plan));
+  const onTogglePanel = (open?: boolean) => setPanelOpen((current) => open ?? !current);
+  // A newly prepared plan pulls the panel in.
+  useEffect(() => { if (outer.planArrivedId) setPanelOpen(true); }, [outer.planArrivedId]);
+  const props = { ...outer, panelOpen, onTogglePanel };
+  const badge = props.plan && props.phase ? PHASE_BADGE[props.phase] : null;
+
   return (
-    <div className="page">
-      <Breadcrumbs items={[{ label: "Home", onClick: props.onHome }, { label: "Changes" }]} />
-      <header className="page-head" style={{ marginBottom: 6 }}>
-        <h1>Make a change</h1>
-      </header>
-      <div className="intro">
-        <p>Tell Mise what you want to change, in your own words. It checks Square and shows you exactly what would change. Nothing happens until someone approves it.</p>
-      </div>
+    <div className={`page studio ${panelOpen ? "panel-open" : ""}`}>
+      <RequestPane {...props} />
 
-      <div className="frame">
-        <RequestPane {...props} />
+      {!panelOpen && (
+        <button type="button" className="panel-handle" onClick={() => onTogglePanel(true)} aria-expanded={false} aria-controls="plan-panel">
+          <Icon name="doc" size={16} />
+          <span>Plan</span>
+          {badge && <Badge tone={badge.tone}>{badge.label}</Badge>}
+        </button>
+      )}
+
+      <aside id="plan-panel" className="plan-drawer" hidden={!panelOpen} aria-label="Plan review">
+        <div className="drawer-head">
+          <strong>Plan review</strong>
+          <button type="button" className="drawer-close" aria-label="Close plan review" onClick={() => onTogglePanel(false)}>
+            <Icon name="arrow" size={16} />
+          </button>
+        </div>
         <PlanPane {...props} />
-      </div>
-
-      <PlanHistory {...props} />
+        <PlanHistory {...props} />
+      </aside>
+      {panelOpen && <div className="drawer-scrim" onClick={() => onTogglePanel(false)} aria-hidden />}
     </div>
   );
 }
@@ -131,15 +146,13 @@ function RequestPane(props: Props) {
   }
 
   return (
-    <section className="pane request-pane" aria-labelledby="request-title">
-      <h2 className="pane-title" id="request-title">Your request</h2>
-      <p className="pane-lede">Say what should change and where. Mention any locations to leave out.</p>
+    <section className="chat request-pane" aria-label="Request">
 
       <div className="convo">
         {props.turns.length === 0 ? (
           <div className="convo-empty">
-            <strong>What would you like to change?</strong>
-            <p>For example, a tax rate, a discount, or a menu price. You can name one location, a state, or all of them.</p>
+            <h1>What would you like to change?</h1>
+            <p>A tax rate, a discount or a price, at one location or all of them.</p>
           </div>
         ) : (
           <div className="thread" ref={threadRef} aria-live="polite" aria-label="Conversation">
@@ -172,7 +185,7 @@ function RequestPane(props: Props) {
                   )}
                   {turn.kind === "planned" && !turn.fresh && (
                     <div className="msg-actions">
-                      <button type="button" className="link" style={{ fontSize: 14 }} onClick={() => document.getElementById("plan-title")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+                      <button type="button" className="link" style={{ fontSize: 14 }} onClick={() => props.onTogglePanel?.(true)}>
                         Review the plan <Icon name="arrow" size={13} />
                       </button>
                     </div>
@@ -189,7 +202,7 @@ function RequestPane(props: Props) {
               <b><Icon name="differences" size={14} />{props.decision.action === "restore" ? "Put back the approved value" : "Keep the value in Square"}</b>
               <span>
                 {props.decision.difference.resourceLabel}, {props.decision.difference.property.toLowerCase()}:{" "}
-                <span className="val">{props.decision.action === "restore" ? props.decision.difference.approved : props.decision.difference.squareNow}</span>. Sending this prepares a plan. It does not change anything yet.
+                <span className="val">{props.decision.action === "restore" ? props.decision.difference.approved : props.decision.difference.squareNow}</span>.
               </span>
             </div>
             <button type="button" className="link" onClick={props.onCancelDecision}>Cancel</button>
@@ -225,7 +238,6 @@ function RequestPane(props: Props) {
               <Icon name="differences" size={15} />Differences
             </button>
             <span className="spacer" />
-            <span className="hint">{props.agentBusy ? "Mise is replying" : "Enter to send"}</span>
             <button
               className={`send ${props.agentBusy ? "working" : ""}`}
               aria-label={props.agentBusy ? "Mise is replying" : awaitingAnswer ? "Send answer" : "Send request"}
@@ -235,7 +247,7 @@ function RequestPane(props: Props) {
             </button>
           </div>
         </form>
-        <p className="disclaimer">Mise can only suggest changes. A person must approve before Square is updated.</p>
+        <p className="disclaimer">Nothing changes in Square until someone approves it.</p>
       </div>
     </section>
   );
@@ -244,7 +256,7 @@ function RequestPane(props: Props) {
 // ---------------------------------------------------------------------------
 // Right pane: the plan, as expandable sections
 
-type Section = "changes" | "where" | "writes" | "progress" | "proof" | "raw";
+type Section = "changes" | "where" | "progress" | "raw";
 
 function PlanPane(props: Props) {
   const { plan, phase, rollout, estate } = props;
@@ -261,11 +273,6 @@ function PlanPane(props: Props) {
   const arriving = Boolean(plan && props.planArrivedId === plan.plan_id);
   useEffect(() => {
     if (!arriving) return;
-    const node = paneRef.current;
-    if (node) {
-      const box = node.getBoundingClientRect();
-      if (box.top > window.innerHeight * 0.6 || box.bottom < 0) node.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
     const timer = setTimeout(props.onPlanArrivalShown, 1600);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -274,19 +281,14 @@ function PlanPane(props: Props) {
   const working = props.agentBusy ? (
     <div className="prompt-bar working-bar" role="status">
       <Spinner size={16} />
-      <span>Working on your request. {plan ? "This plan will be replaced if a new one is prepared." : "A plan will appear here if one is prepared."}</span>
+      <span>Preparing a plan...</span>
     </div>
   ) : null;
 
   if (!plan || !phase) {
     return (
-      <section className="pane" aria-label="Plan preview" style={{ background: "var(--surface)" }} ref={paneRef}>
-        {working ?? <div className="prompt-bar"><Icon name="doc" size={18} />Send a request on the left to see a plan here</div>}
-        <div className="rows" style={{ marginTop: 24 }}>
-          <div className="row-set"><div className="label">What you will see</div><div className="value">The exact settings that would change in Square, shown as before and after.</div></div>
-          <div className="row-set"><div className="label">Where it applies</div><div className="value">Which of your {estate.observed_estate?.location_count ?? 0} locations are affected, and which are left alone.</div></div>
-          <div className="row-set"><div className="label">What happens next</div><div className="value">You approve the plan, then send it to Square. Mise reads Square back to confirm it worked.</div></div>
-        </div>
+      <section className="pane" aria-label="Plan preview" ref={paneRef}>
+        {working ?? <p className="drawer-empty">Send a request and the plan appears here. Nothing is sent until it is approved.</p>}
       </section>
     );
   }
@@ -294,7 +296,6 @@ function PlanPane(props: Props) {
   const revision = props.revisions.find((item) => item.revision_id === plan.revision_id);
   const badge = PHASE_BADGE[phase];
   const title = plan.title || stringFrom(plan.summary?.change_title) || "Untitled change";
-  const writes = planWrites(plan);
   const policyOnly = isPolicyOnly(plan);
   const locations = estate.observed_estate?.locations ?? [];
   const targets = new Set(plan.target_location_ids ?? []);
@@ -310,23 +311,20 @@ function PlanPane(props: Props) {
 
   return (
     <section className={`pane ${arriving ? "arrived" : ""} ${props.agentBusy ? "stale" : ""}`} aria-labelledby="plan-title" ref={paneRef}>
-      {working ?? (
-        <div className={`prompt-bar ${arriving ? "ready-bar" : ""}`}>
-          <Icon name={arriving ? "check" : "doc"} size={18} />
-          {arriving ? "New plan ready to review" : "Plan preview"}
+      {working ?? (arriving && (
+        <div className="prompt-bar ready-bar">
+          <Icon name="check" size={18} />New plan ready
         </div>
-      )}
+      ))}
 
       <div className="pv-head">
         <div style={{ minWidth: 0 }}>
           <h3 id="plan-title">{title}</h3>
           <div className="sub">
             <Badge tone={badge.tone}>{badge.label}</Badge>
-            {revision && <span>Version {revision.revision_number}</span>}
-            <span>Prepared {formatTime(plan.created_at)}</span>
+            <span>{formatTime(plan.created_at)}</span>
           </div>
         </div>
-        <CopyField value={plan.plan_id} label="plan ID" />
       </div>
 
       {plan.artifact_verified === false && (
@@ -340,7 +338,7 @@ function PlanPane(props: Props) {
           <AccordionItem
             icon="changes"
             title="What changes"
-            subtitle={policyOnly ? "Only the approved setup changes. Square already has this value." : plan.changes ? `${changeCount} setting${changeCount === 1 ? "" : "s"} in Square` : "Loading..."}
+            subtitle={policyOnly ? "Square already has this value" : plan.changes ? `${changeCount} setting${changeCount === 1 ? "" : "s"} in Square` : "Loading..."}
             open={open.has("changes")}
             onToggle={() => toggle("changes")}
           >
@@ -398,37 +396,15 @@ function PlanPane(props: Props) {
             )}
           </AccordionItem>
 
-          <AccordionItem
-            icon="rollout"
-            title="Updates to Square"
-            subtitle={writes.total === 0 ? "None" : `${writes.create} new, ${writes.update} changed, ${writes.remove} removed`}
-            open={open.has("writes")}
-            onToggle={() => toggle("writes")}
-          >
-            <div className="writes">
-              {([["new", writes.create], ["changed", writes.update], ["removed", writes.remove]] as const).map(([label, count]) => (
-                <div key={label} className={count === 0 ? "zero" : ""}><strong>{count}</strong><span>{label}</span></div>
-              ))}
-            </div>
-            <span className="hint" style={{ display: "block", marginTop: 8, fontSize: 13, color: "var(--muted)" }}>Mise never removes anything from Square on its own.</span>
-          </AccordionItem>
-
           <AccordionItem icon="shield" title="Progress" subtitle={progressSummary(phase, own, revision)} open={open.has("progress")} onToggle={() => toggle("progress")}>
             <Progress plan={plan} phase={phase} rollout={own} revision={revision} />
           </AccordionItem>
 
-          <AccordionItem
-            icon="lock"
-            title="Approval code"
-            subtitle="A unique code for this exact plan. Approval only counts for this code."
-            open={open.has("proof")}
-            onToggle={() => toggle("proof")}
-          >
-            <CopyField value={plan.plan_hash} display={`sha256:${plan.plan_hash.slice(0, 16)}...${plan.plan_hash.slice(-10)}`} label="plan code" />
-            <p className="muted" style={{ margin: "8px 0 0", fontSize: 14 }}>If anyone edits the plan after it was prepared, the code no longer matches and the approval will not work.</p>
-          </AccordionItem>
-
-          <AccordionItem icon="doc" title="Technical details" subtitle="The raw plan record, for support and audits" open={open.has("raw")} onToggle={() => toggle("raw")}>
+          <AccordionItem icon="doc" title="Technical details" subtitle="Plan ID, approval code, raw record" open={open.has("raw")} onToggle={() => toggle("raw")}>
+            <div className="tech-ids">
+              <CopyField value={plan.plan_id} label="plan ID" />
+              <CopyField value={plan.plan_hash} display={`sha256:${plan.plan_hash.slice(0, 12)}...${plan.plan_hash.slice(-8)}`} label="approval code" />
+            </div>
             <pre className="raw" aria-label="Plan record JSON">{JSON.stringify(plan, null, 2)}</pre>
           </AccordionItem>
         </div>
@@ -464,7 +440,7 @@ function Progress({ plan, phase, rollout, revision }: { plan: PlanRecord; phase:
   const approved = phase !== "review" && phase !== "closed";
   type Step = { key: string; icon: IconName; state: "done" | "now" | "bad" | "warn" | "skip" | ""; title: string; sub?: string; sub2?: string; meter?: number };
   const steps: Step[] = [
-    { key: "prepared", icon: "calendar", state: "done", title: "Plan prepared", sub: `${formatTime(plan.created_at)}, based on what is in Square right now` },
+    { key: "prepared", icon: "calendar", state: "done", title: "Plan prepared", sub: formatTime(plan.created_at) },
     approved
       ? { key: "approved", icon: "check", state: phase === "replaced" ? "warn" : "done", title: revision ? `Approved as version ${revision.revision_number}` : "Approved", sub: plan.approved_at ? formatTime(plan.approved_at) : undefined, sub2: phase === "replaced" ? "A newer version has since replaced it" : undefined }
       : { key: "approved", icon: "shield", state: "now", title: "Waiting for approval", sub: "Someone with the operator code needs to approve it" },
@@ -523,7 +499,7 @@ function Footer(props: Props & { plan: PlanRecord; phase: PlanPhase; revision?: 
       content = <><span className="note"><Icon name="check" size={14} />Approved. Square has not changed yet.</span><button className="btn dark lg" onClick={props.onApply} disabled={actionBusy}>{actionBusy ? <><Spinner />Sending</> : <>Send to Square <Icon name="arrow" size={14} /></>}</button></>;
       break;
     case "policy_only_approved":
-      content = <><span className="stamp positive"><Icon name="check" size={14} />Approved as {version}</span><span className="note">Nothing to send</span></>;
+      content = <><span className="stamp positive"><Icon name="check" size={14} />Approved as {version}. Nothing to send.</span></>;
       break;
     case "replaced":
       content = <span className="note"><Icon name="info" size={14} />A newer approved version replaced this plan, so it can no longer be sent.</span>;
@@ -552,47 +528,26 @@ function Footer(props: Props & { plan: PlanRecord; phase: PlanPhase; revision?: 
 
 function PlanHistory(props: Props) {
   const plans = [...props.plans].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  if (plans.length === 0) return null;
   const current = props.estate.desired_revision;
   return (
-    <section className="sec" aria-labelledby="plans-title" style={{ marginTop: 48 }}>
-      <div className="sec-head">
-        <div><h2 id="plans-title">All plans</h2><p>Every plan prepared for your locations. Select one to see it above.</p></div>
-      </div>
-      {plans.length === 0 ? (
-        <div className="empty"><strong>No plans yet</strong><p>Plans you prepare will show up here.</p></div>
-      ) : (
-        <>
-          <div className="table-wrap">
-            <table className="grid">
-              <thead><tr><th>Plan</th><th>Status</th><th className="right">Updates to Square</th><th>Version</th><th>Prepared</th></tr></thead>
-              <tbody>
-                {plans.map((plan) => {
-                  const phase = planPhase(plan, rolloutForPlan(plan.plan_id, props.rollouts, props.latestRollout), current);
-                  const badge = PHASE_BADGE[phase];
-                  const writes = planWrites(plan);
-                  const revision = props.revisions.find((item) => item.revision_id === plan.revision_id);
-                  const selected = plan.plan_id === props.plan?.plan_id;
-                  return (
-                    <tr key={plan.plan_id} className={`row ${selected ? "expanded" : ""}`} onClick={() => { props.onSelectPlan(plan.plan_id); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
-                      <td className="strong">
-                        <button type="button" className="link" style={{ color: "var(--ink)", fontWeight: 600, textAlign: "left" }} aria-current={selected ? "true" : undefined} onClick={(event) => { event.stopPropagation(); props.onSelectPlan(plan.plan_id); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
-                          {plan.title || "Untitled change"}
-                        </button>
-                        <span className="sub mono">{plan.plan_id}</span>
-                      </td>
-                      <td><Badge tone={badge.tone}>{badge.label}</Badge></td>
-                      <td className="right num">{writes.total === 0 ? <span className="muted">None needed</span> : `${writes.total}`}</td>
-                      <td>{revision ? `Version ${revision.revision_number}` : <span className="faint">Not approved</span>}</td>
-                      <td>{formatTime(plan.created_at)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="results">{plans.length} result{plans.length === 1 ? "" : "s"}</div>
-        </>
-      )}
+    <section className="history" aria-labelledby="plans-title">
+      <h2 id="plans-title">All plans</h2>
+      <ul className="history-list">
+        {plans.map((plan) => {
+          const phase = planPhase(plan, rolloutForPlan(plan.plan_id, props.rollouts, props.latestRollout), current);
+          const badge = PHASE_BADGE[phase];
+          const selected = plan.plan_id === props.plan?.plan_id;
+          return (
+            <li key={plan.plan_id}>
+              <button type="button" className={selected ? "selected" : ""} aria-current={selected ? "true" : undefined} onClick={() => props.onSelectPlan(plan.plan_id)}>
+                <span className="t">{plan.title || "Untitled change"}</span>
+                <span className="m"><Badge tone={badge.tone}>{badge.label}</Badge><span>{formatTime(plan.created_at)}</span></span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }
