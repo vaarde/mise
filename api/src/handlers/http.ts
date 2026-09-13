@@ -38,7 +38,6 @@ export function createHttpHandler(service: MiseApiService, mutationSecret: Mutat
           headers: {
             "content-type": "text/event-stream",
             "cache-control": "no-cache, no-transform",
-            "access-control-allow-origin": "*",
           },
           body: formatSse(events),
         };
@@ -107,7 +106,6 @@ function json(statusCode: number, value: unknown): APIGatewayProxyStructuredResu
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",
-      "access-control-allow-origin": "*",
     },
     body: JSON.stringify(value),
   };
