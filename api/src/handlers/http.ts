@@ -21,7 +21,7 @@ export function createHttpHandler(service: MiseApiService, mutationSecret: Mutat
 
       const planMatch = path.match(/^\/plans\/([^/]+)$/);
       if (method === "GET" && planMatch) {
-        return json(200, await service.plan(decodeURIComponent(planMatch[1]!)));
+        return json(200, await service.planDetail(decodeURIComponent(planMatch[1]!)));
       }
 
       const rolloutMatch = path.match(/^\/rollouts\/([^/]+)$/);
