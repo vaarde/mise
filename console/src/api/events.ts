@@ -22,7 +22,9 @@ export function subscribeToRolloutEvents(
   let terminalReceived = false;
   let disposed = false;
   let errorTimer: ReturnType<typeof setTimeout> | undefined;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
   const listeners = new Map<string, EventListener>();
+  const rolloutUrl = url.replace(/\/events(?:\?.*)?$/, "");
 
   const clearPendingError = () => {
     if (errorTimer !== undefined) {
@@ -31,8 +33,16 @@ export function subscribeToRolloutEvents(
     }
   };
 
+  const clearPoll = () => {
+    if (pollTimer !== undefined) {
+      clearInterval(pollTimer);
+      pollTimer = undefined;
+    }
+  };
+
   const closeSource = () => {
     clearPendingError();
+    clearPoll();
     if (!source) return;
     for (const [type, listener] of listeners) source.removeEventListener(type, listener);
     source.close();
@@ -40,27 +50,45 @@ export function subscribeToRolloutEvents(
     listeners.clear();
   };
 
+  const poll = async () => {
+    if (disposed || terminalReceived) return;
+    try {
+      const response = await fetch(rolloutUrl, { cache: "no-store" });
+      if (!response.ok) return;
+      const rollout = await response.json() as { status?: string };
+      onEvent({ sequence: 0, type: "rollout_poll", data: { status: rollout.status ?? "" } });
+      if (isTerminalRolloutStatus(rollout.status)) {
+        terminalReceived = true;
+        closeSource();
+      }
+    } catch {
+      // SSE owns connection-error messaging. Polling is only a resilience
+      // fallback so a missed terminal event cannot leave the UI stuck.
+    }
+  };
+
   const start = async () => {
-    // The console frequently mounts with the latest rollout already terminal.
-    // Query its persisted status first rather than opening a replay-only SSE
-    // connection whose normal EOF browsers can report as a reconnect error.
-    const rolloutUrl = url.replace(/\/events(?:\?.*)?$/, "");
+    // Avoid opening a replay-only SSE stream when the persisted rollout is
+    // already terminal. This also gives the initial status refresh a chance
+    // to update the UI before the event stream starts.
     try {
       const response = await fetch(rolloutUrl, { cache: "no-store" });
       if (response.ok) {
         const rollout = await response.json() as { status?: string };
         if (isTerminalRolloutStatus(rollout.status)) {
           terminalReceived = true;
+          onEvent({ sequence: 0, type: "rollout_poll", data: { status: rollout.status ?? "" } });
           return;
         }
       }
     } catch {
-      // A failed preflight does not disable live events; EventSource below is
-      // still the source of truth for transport/reconnect handling.
+      // A failed preflight does not disable live events.
     }
 
     if (disposed || terminalReceived) return;
     source = new EventSource(url);
+    pollTimer = setInterval(() => void poll(), 1500);
+
     const eventTypes = [
       "rollout_queued",
       "apply_started",
@@ -96,10 +124,6 @@ export function subscribeToRolloutEvents(
 
     source.onerror = (event) => {
       if (terminalReceived || disposed) return;
-
-      // A finite replay can race its terminal event with EventSource.onerror.
-      // Give the queued event listener a moment to mark completion. Real
-      // connectivity failures remain visible after the grace period.
       clearPendingError();
       errorTimer = setTimeout(() => {
         errorTimer = undefined;
