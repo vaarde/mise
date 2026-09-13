@@ -70,7 +70,7 @@ jobs:
         working-directory: api
       - run: npm run bundle
         working-directory: api
-      - run: npm install
+      - run: npm install --include=optional
         working-directory: console
       - run: npm run build
         working-directory: console
