@@ -138,7 +138,11 @@ Resources:
         - arm64
       Handler: index.handler
       Role: !GetAtt ApiExecutionRole.Arn
-      Timeout: 60
+      # Agent/Bedrock turns can legitimately exceed API Gateway's synchronous
+      # request window during a cold start. The browser therefore uses the
+      # Function URL below, while API Gateway remains available for short API
+      # calls and debugging. Lambda itself has enough time to finish the turn.
+      Timeout: 180
       MemorySize: 512
       Code:
         S3Bucket: !Ref WorkspaceBucketName
@@ -151,6 +155,42 @@ Resources:
           MISE_AGENT_RUNTIME_ARN: !Ref AgentRuntimeArn
           MISE_APPLY_WORKER_FUNCTION: !Ref ApplyWorkerFunction
           MISE_DEMO_ACCESS_SECRET_ID: !Ref DemoAccessSecretArn
+
+  HttpFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !GetAtt HttpFunction.Arn
+      InvokeMode: BUFFERED
+      Cors:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+        AllowHeaders:
+          - content-type
+          - x-mise-demo-access
+          - last-event-id
+        MaxAge: 300
+
+  # Since October 2025 AWS requires both permissions for new public Function
+  # URLs. These grants apply only to invocations arriving through this URL.
+  HttpFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref HttpFunction
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  HttpFunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref HttpFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
 
   HttpApi:
     Type: AWS::ApiGatewayV2::Api
@@ -282,7 +322,12 @@ Resources:
                 AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ConsoleDistribution}
 
 Outputs:
+  # Browser-facing endpoint. A Lambda Function URL avoids API Gateway's short
+  # synchronous integration window for Strands/Bedrock turns.
   ApiBaseUrl:
+    Value: !GetAtt HttpFunctionUrl.FunctionUrl
+  # Keep the API Gateway endpoint available for short calls and diagnostics.
+  HttpApiBaseUrl:
     Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
   HttpFunctionName:
     Value: !Ref HttpFunction
