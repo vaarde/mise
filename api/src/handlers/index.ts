@@ -35,16 +35,6 @@ const service = new MiseApiService(organizationId, {
 
 const baseHandler = createHttpHandler(service, () => mutationSecret.get());
 
-/**
- * The ordinary /estate route is governance metadata only. The public console
- * also needs a truthful location estate. This read-only route derives the
- * location list from the newest governed plan artifact rather than falling
- * back to the console's 200-location demonstration fixture.
- *
- * /drift delegates to AgentCore's deterministic `mise drift --json` path. It
- * is intentionally public/read-only; it records no acceptance and performs no
- * POS mutation.
- */
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> {
@@ -129,7 +119,6 @@ function json(statusCode: number, value: unknown): APIGatewayProxyStructuredResu
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store",
-      "access-control-allow-origin": "*",
     },
     body: JSON.stringify(value),
   };
