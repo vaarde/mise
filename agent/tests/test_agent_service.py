@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import yaml
 
 from mise_agent.models import ChangeIntent, IntentAnalysis, LocationSelector, ResourceMutation
-from mise_agent.service import MiseOperationsAgent
+from mise_agent.service import MiseOperationsAgent, SYSTEM_PROMPT
 from mise_cli.contracts import PlanDocument, PlanSummary
 
 
@@ -50,6 +50,14 @@ def workspace(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return root
+
+
+def test_system_prompt_defines_plain_percentage_discount_default() -> None:
+    assert "resource_type=square_catalog_discount" in SYSTEM_PROMPT
+    assert "discount_type=FIXED_PERCENTAGE" in SYSTEM_PROMPT
+    assert "manually apply at POS" in SYSTEM_PROMPT
+    assert "Do not reinterpret it as a pricing rule" in SYSTEM_PROMPT
+    assert "Do not ask which items/categories" in SYSTEM_PROMPT
 
 
 def test_ambiguous_request_stops_before_render_or_plan(tmp_path: Path) -> None:
