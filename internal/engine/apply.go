@@ -115,7 +115,9 @@ func Apply(
 				// known, so record it rather than throwing it away.
 				accounted := recordOutcomes(result, wave, ops, outcomes, st, appliedAt)
 				st.LastApply = &appliedAt
-				saveCheckpoint(opts, st)
+				if result.Total() > 0 {
+					saveCheckpoint(opts, st)
+				}
 
 				unknown := len(ops) - accounted
 				return result, fmt.Errorf(
@@ -135,14 +137,19 @@ func Apply(
 			return result, err
 		}
 
+		beforeTotal := result.Total()
 		recordOutcomes(result, wave, ops, outcomes, st, appliedAt)
 
-		// Persist what this wave did before starting the next one, so a
-		// crash costs at most one wave rather than the whole run.
-		if err := saveCheckpointErr(opts, st); err != nil {
-			st.LastApply = &appliedAt
-			return result, fmt.Errorf("a wave was applied but state could not be saved, "+
-				"so a retry would repeat it — run 'mise drift' to see what is live: %w", err)
+		// Persist only when this wave actually changed the provider. A
+		// wave where every write was rejected must not advance state serial;
+		// otherwise the exact saved plan becomes stale even though neither
+		// Mise state nor the live POS changed.
+		if result.Total() > beforeTotal {
+			if err := saveCheckpointErr(opts, st); err != nil {
+				st.LastApply = &appliedAt
+				return result, fmt.Errorf("a wave was applied but state could not be saved, "+
+					"so a retry would repeat it — run 'mise drift' to see what is live: %w", err)
+			}
 		}
 
 		// A resource that failed is a dependency nothing later can rely
