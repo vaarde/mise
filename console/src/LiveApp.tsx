@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { configuredClient, ConsoleApiError } from "./api/client.js";
-import { subscribeToRolloutEvents } from "./api/events.js";
+import { isTerminalRolloutStatus, subscribeToRolloutEvents } from "./api/events.js";
 import { rolloutPhaseLabel } from "./demo.js";
 import type {
   AgentTurn,
@@ -89,13 +89,13 @@ export default function LiveApp() {
   }, []);
 
   useEffect(() => {
-    if (!rollout?.rollout_id) return;
+    if (!rollout?.rollout_id || isTerminalRolloutStatus(rollout.status)) return;
     return subscribeToRolloutEvents(
       client.eventsUrl(rollout.rollout_id),
       () => void refreshRollout(rollout.rollout_id),
       () => setNotice("Live rollout updates are reconnecting. The saved rollout state remains authoritative."),
     );
-  }, [rollout?.rollout_id]);
+  }, [rollout?.rollout_id, rollout?.status]);
 
   async function refreshLive() {
     setLoading(true);
@@ -140,7 +140,7 @@ export default function LiveApp() {
     try {
       const next = await client.rollout(rolloutId);
       setRollout(next);
-      if (["converged", "partial", "failed", "outcome_uncertain"].includes(next.status)) {
+      if (isTerminalRolloutStatus(next.status)) {
         await refreshLive();
       }
     } catch (error) {
@@ -180,7 +180,17 @@ export default function LiveApp() {
       }
       await refreshLive();
     } catch (error) {
-      setNotice(errorMessage(error));
+      const message = errorMessage(error);
+      setTurns((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "mise",
+          tone: "clarification",
+          text: `I could not prepare that governed plan: ${message}. Nothing was approved or applied.`,
+        },
+      ]);
+      setNotice(`Plan preparation failed: ${message}`);
     } finally {
       setBusy(false);
     }
@@ -247,6 +257,9 @@ export default function LiveApp() {
       ? `At ${target}, restore ${item.resource} ${property} to ${item.expected}. This is remediation for observed drift. Do not apply anything.`
       : `At ${target}, change the approved ${item.resource} ${property} to ${item.actual} so the current Square value becomes the proposed desired state. Do not apply anything.`;
 
+    // Drift resolution is a new governance decision. It should not inherit a
+    // stale clarification session from the previous policy request.
+    setSessionId(undefined);
     setPrompt(nextPrompt);
     setPage("changes");
     setTurns((current) => [
@@ -270,6 +283,7 @@ export default function LiveApp() {
     ? Math.round((rollout.converged_count / rollout.locations_total) * 100)
     : null;
   const planStatus = effectivePlanStatus(activePlan, rollout);
+  const activePlanRollout = rollout?.plan_id === activePlan?.plan_id ? rollout : null;
 
   return (
     <div className="app-shell everyday-shell">
@@ -329,7 +343,7 @@ export default function LiveApp() {
             busy={busy}
             plan={activePlan}
             planStatus={planStatus}
-            rollout={rollout}
+            rollout={activePlanRollout}
             onSubmit={submitPrompt}
             onApprove={approvePlan}
             onApply={startApply}
