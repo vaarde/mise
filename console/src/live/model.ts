@@ -223,7 +223,7 @@ export function rolloutSentence(rollout: RolloutRecord): string {
     case "queued": return "Waiting to start the Square update.";
     case "applying": return `Updating Square · ${rollout.changes_completed} of ${rollout.changes_total} settings written.`;
     case "verifying": return `Reading Square back · ${rollout.locations_verified} of ${rollout.locations_total} locations checked.`;
-    case "converged": return `${rollout.converged_count} of ${rollout.locations_total} affected locations verified against the approved setup.`;
+    case "converged": return `${rollout.converged_count} of ${rollout.locations_total} affected locations verified against the approved plan.`;
     case "partial": return `${rollout.converged_count} of ${rollout.locations_total} locations match; ${rollout.non_converged_count} do not. Review Differences before retrying.`;
     case "outcome_uncertain": return "The update was interrupted and Square may or may not have applied it. Check Differences before doing anything else.";
     case "failed": return "The rollout stopped before Square could be verified.";
@@ -244,8 +244,11 @@ export interface Difference {
   resourceName: string;
   resourceLabel: string;
   resourceKind: string;
+  providerId: string;
   path: string;
   property: string;
+  approvedRaw: unknown;
+  squareNowRaw: unknown;
   approved: string;
   squareNow: string;
   locationIds: string[];
@@ -268,6 +271,7 @@ export function differencesFromConformance(response: ConformanceResponse, names:
       resourceName: change.resource_name,
       resourceLabel: humanizeResource(change.resource_name),
       resourceKind: resourceKind(change.resource_type),
+      providerId: change.provider_id ?? "",
       locationIds,
       locationNames,
     };
@@ -279,6 +283,8 @@ export function differencesFromConformance(response: ConformanceResponse, names:
         kind: "missing",
         path: "resource",
         property: "Exists in Square",
+        approvedRaw: null,
+        squareNowRaw: null,
         approved: "Present",
         squareNow: "Missing",
         affectsPrices: money,
@@ -292,6 +298,8 @@ export function differencesFromConformance(response: ConformanceResponse, names:
         kind: "changed",
         path: diff.path,
         property: propertyLabel(diff.path),
+        approvedRaw: diff.new_value,
+        squareNowRaw: diff.old_value,
         approved: formatValue(diff.path, diff.new_value, names),
         squareNow: formatValue(diff.path, diff.old_value, names),
         affectsPrices: money && /percentage|price|amount/i.test(diff.path),
