@@ -247,7 +247,7 @@ function RequestPane(props: Props) {
             </button>
           </div>
         </form>
-        <p className="disclaimer">Nothing changes in Square until someone approves it.</p>
+        <p className="disclaimer">Nothing changes in Square until an approved plan is sent.</p>
       </div>
     </section>
   );
@@ -257,7 +257,6 @@ function RequestPane(props: Props) {
 // Right pane: the plan, as expandable sections
 
 type Section = "changes" | "where" | "progress" | "raw";
-
 function PlanPane(props: Props) {
   const { plan, phase, rollout, estate } = props;
   const [open, setOpen] = useState<Set<Section>>(new Set(["changes", "progress"]));
@@ -288,7 +287,7 @@ function PlanPane(props: Props) {
   if (!plan || !phase) {
     return (
       <section className="pane" aria-label="Plan preview" ref={paneRef}>
-        {working ?? <p className="drawer-empty">Send a request and the plan appears here. Nothing is sent until it is approved.</p>}
+        {working ?? <p className="drawer-empty">Send a request and the plan appears here. Approval sets the official setup; sending to Square is a separate step.</p>}
       </section>
     );
   }
@@ -304,7 +303,7 @@ function PlanPane(props: Props) {
 
   const changeCount = plan.changes?.length ?? 0;
   const whereSummary = policyOnly
-    ? "No location needs an update"
+    ? "No Square location needs an update"
     : plan.target_location_ids
       ? `${targets.size} of ${locations.length} locations: ${locations.filter((location) => targets.has(location.id)).map((location) => location.name).join(", ") || "none"}`
       : "Loading...";
@@ -379,9 +378,9 @@ function PlanPane(props: Props) {
             )}
           </AccordionItem>
 
-          <AccordionItem icon="locations" title="Where it applies" subtitle={whereSummary} open={open.has("where")} onToggle={() => toggle("where")}>
+          <AccordionItem icon="locations" title={policyOnly ? "Where Square needs updating" : "Where it applies"} subtitle={whereSummary} open={open.has("where")} onToggle={() => toggle("where")}>
             {policyOnly ? (
-              <p className="muted" style={{ margin: 0 }}>No location receives an update from this plan.</p>
+              <p className="muted" style={{ margin: 0 }}>No Square locations require an update. This plan changes approved policy only.</p>
             ) : (
               <div className="scope-list">
                 {[...locations].sort((a, b) => Number(targets.has(b.id)) - Number(targets.has(a.id)) || a.name.localeCompare(b.name)).map((location) => (
@@ -400,10 +399,10 @@ function PlanPane(props: Props) {
             <Progress plan={plan} phase={phase} rollout={own} revision={revision} />
           </AccordionItem>
 
-          <AccordionItem icon="doc" title="Technical details" subtitle="Plan ID, approval code, raw record" open={open.has("raw")} onToggle={() => toggle("raw")}>
+          <AccordionItem icon="doc" title="Technical details" subtitle="Plan ID, plan fingerprint, raw record" open={open.has("raw")} onToggle={() => toggle("raw")}>
             <div className="tech-ids">
               <CopyField value={plan.plan_id} label="plan ID" />
-              <CopyField value={plan.plan_hash} display={`sha256:${plan.plan_hash.slice(0, 12)}...${plan.plan_hash.slice(-8)}`} label="approval code" />
+              <CopyField value={plan.plan_hash} display={`sha256:${plan.plan_hash.slice(0, 12)}...${plan.plan_hash.slice(-8)}`} label="plan fingerprint" />
             </div>
             <pre className="raw" aria-label="Plan record JSON">{JSON.stringify(plan, null, 2)}</pre>
           </AccordionItem>
