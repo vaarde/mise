@@ -114,7 +114,10 @@ func Drift(
 		return nil, err
 	}
 
-	result := &DriftResult{Locations: scoped}
+	// Keep the machine contract stable: a clean drift report serializes
+	// `drifted` as [] rather than null. Downstream typed clients should not
+	// need a special case for the absence of discrepancies.
+	result := &DriftResult{Locations: scoped, Drifted: []ResourceDrift{}}
 	if st.LastFetch != nil {
 		result.LastFetch = st.LastFetch.Format("2006-01-02 15:04:05 MST")
 	}
