@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EstateResponse, PlanRecord, RolloutRecord } from "../types.js";
 import { PHASE_BADGE } from "./ChangesPage.js";
-import { AccordionItem, Badge, Breadcrumbs, CopyField, Icon, RadioCards, StatusCards, Tabs, type IconName } from "./components.js";
+import { AccordionItem, Badge, Breadcrumbs, CopyField, Icon, RadioCards, Spinner, StatusCards, Tabs, type IconName } from "./components.js";
 import {
   formatTime,
   isPolicyOnly,
@@ -267,6 +267,20 @@ export function DifferencesPage(props: {
   const checked = conformance.status === "ok" ? conformance.value.checked : null;
   const version = revision ? `version ${revision.revision_number}` : "your approved setup";
 
+  // "Updated just now" after a check the operator started finishes.
+  const wasChecking = useRef(false);
+  const [justUpdated, setJustUpdated] = useState(false);
+  useEffect(() => {
+    if (checking) { wasChecking.current = true; return; }
+    if (wasChecking.current && conformance.status === "ok") {
+      wasChecking.current = false;
+      setJustUpdated(true);
+      const timer = setTimeout(() => setJustUpdated(false), 3500);
+      return () => clearTimeout(timer);
+    }
+    wasChecking.current = false;
+  }, [checking, conformance.status]);
+
   function chooseTab(next: "open" | "audit") {
     setTab(next);
     if (next === "audit" && props.audit.status === "idle") props.onLoadAudit();
@@ -296,16 +310,19 @@ export function DifferencesPage(props: {
               {checked !== null && ` Mise checked ${checked} settings and ${Math.max(0, checked - differingResources)} are correct.`}
               {" "}Mise never fixes these on its own.
             </p>
-            <button className="btn" onClick={props.onCheck} disabled={checking}>
-              <Icon name="refresh" size={14} />{checking ? "Checking..." : "Check again"}
-            </button>
+            <span className="btn-row">
+              {justUpdated && <span className="updated-flash" role="status"><Icon name="check" size={13} />Updated just now</span>}
+              <button className="btn" onClick={props.onCheck} disabled={checking} aria-busy={checking}>
+                {checking ? <><Spinner />Checking Square</> : <><Icon name="refresh" size={14} />Check again</>}
+              </button>
+            </span>
           </div>
 
           {conformance.status === "error" && (
             <div className="callout critical"><div><b><Icon name="alert" size={14} />Couldn't check Square</b><span>{conformance.message} The list below may be out of date.</span></div></div>
           )}
 
-          {shown === null && <div className="empty"><strong>{checking ? "Checking Square..." : "Not checked yet"}</strong><p>Mise reads each setting it manages from Square and compares it with the approved value.</p></div>}
+          {shown === null && <div className="empty">{checking && <Spinner size={22} label="Checking Square" />}<strong>{checking ? "Checking Square..." : "Not checked yet"}</strong><p>Mise reads each setting it manages from Square and compares it with the approved value.</p></div>}
 
           {shown && shown.length === 0 && (
             <div className="all-matched">
@@ -383,9 +400,9 @@ function AuditView({ audit, onReload }: { audit: CheckState<AuditEntry[]>; onRel
     <>
       <div className="intro">
         <p>A record of settings that were changed directly in Square since Mise last updated it. This is history, not a to-do list. An item can stay here even after you approved the new value.</p>
-        <button className="btn" onClick={onReload} disabled={audit.status === "checking"}><Icon name="refresh" size={14} />Reload</button>
+        <button className="btn" onClick={onReload} disabled={audit.status === "checking"} aria-busy={audit.status === "checking"}>{audit.status === "checking" ? <><Spinner />Loading</> : <><Icon name="refresh" size={14} />Reload</>}</button>
       </div>
-      {(audit.status === "idle" || audit.status === "checking") && <div className="empty"><strong>Loading history...</strong></div>}
+      {(audit.status === "idle" || audit.status === "checking") && <div className="empty"><Spinner size={22} label="Loading history" /><strong>Loading history...</strong></div>}
       {audit.status === "error" && <div className="empty"><strong>History is unavailable</strong><p>{audit.message}</p></div>}
       {audit.status === "ok" && audit.value.length === 0 && <div className="empty"><strong>No outside changes</strong><p>Nothing was changed directly in Square since Mise last updated it.</p></div>}
       {audit.status === "ok" && audit.value.length > 0 && (

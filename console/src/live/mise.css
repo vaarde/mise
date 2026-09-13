@@ -589,3 +589,93 @@ table.grid tr.detail-row td { padding: 0 10px 16px; background: var(--subtle); c
 .convo { min-height: 440px; }
 .convo-empty { align-content: start; padding-top: 48px; }
 .composer2 .tools .hint { white-space: nowrap; }
+
+/* =====================================================================
+   State transitions: in-progress, arrival and completion cues
+   ===================================================================== */
+
+/* Spinner */
+.spinner { display: inline-block; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; opacity: .85; animation: spin .7s linear infinite; vertical-align: -2px; }
+.btn .spinner { margin-right: 2px; }
+
+/* Your message pops in */
+.msg-user.pop { animation: pop-in .28s var(--ease) both; transform-origin: bottom right; }
+@keyframes pop-in { from { opacity: 0; transform: translateY(8px) scale(.96); } to { opacity: 1; transform: none; } }
+
+/* Mise is thinking */
+.brand-mark.busy { animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(32, 121, 237, 0); } 50% { box-shadow: 0 0 0 4px rgba(32, 121, 237, .22); } }
+.thinking { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 10px 14px; border-radius: 12px; background: var(--subtle); width: fit-content; max-width: 100%; animation: reveal .2s var(--ease); }
+.thinking-dots { display: inline-flex; gap: 4px; }
+.thinking-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); animation: bounce 1.2s infinite ease-in-out; }
+.thinking-dots i:nth-child(2) { animation-delay: .15s; }
+.thinking-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-4px); opacity: 1; } }
+.thinking-text { font-size: 15px; font-weight: 500; background: linear-gradient(90deg, var(--muted) 0%, var(--ink) 45%, var(--muted) 90%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: text-shimmer 2.2s linear infinite; }
+@keyframes text-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.thinking-time { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.thinking-note { flex-basis: 100%; font-size: 13px; color: var(--muted); animation: reveal .3s var(--ease); }
+
+/* The reply arrives */
+.msg-mise.arrive { animation: arrive .32s var(--ease) both; }
+@keyframes arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.reveal-word { opacity: 0; animation: word-in .24s var(--ease) forwards; }
+@keyframes word-in { from { opacity: 0; filter: blur(2px); } to { opacity: 1; filter: none; } }
+.msg-mise .msg-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; animation: reveal .3s var(--ease) both; }
+
+/* Composer while waiting, and when a decision prefilled it */
+.composer2.busy { box-shadow: 0 0 0 1px var(--blue-line), 0 4px 16px rgba(26, 31, 54, .08); }
+.composer2.busy::before { content: ""; display: block; height: 2px; margin: 0 18px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--blue), transparent); background-size: 40% 100%; background-repeat: no-repeat; animation: slide-bar 1.3s ease-in-out infinite; }
+@keyframes slide-bar { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+.mise .send.working { background: var(--blue); opacity: .9; cursor: progress; }
+.composer2.pulse { animation: attention-ring 1.4s var(--ease) 2; }
+@keyframes attention-ring { 0%, 100% { box-shadow: 0 0 0 1px var(--line), 0 4px 16px rgba(26, 31, 54, .08); } 50% { box-shadow: 0 0 0 2px var(--blue), 0 0 0 7px rgba(32, 121, 237, .18); } }
+
+/* Plan pane: working, stale, and arrival */
+.working-bar { color: var(--blue-press); border-color: var(--blue-line); background: var(--blue-tint); font-size: 15px; }
+.working-bar span { min-width: 0; }
+.pane.stale .pv-head, .pane.stale .pv-body { opacity: .5; transition: opacity .25s var(--ease); pointer-events: none; }
+.pane.arrived { animation: pane-arrive 1.4s var(--ease); }
+@keyframes pane-arrive { 0% { box-shadow: inset 0 0 0 0 rgba(32, 121, 237, 0); } 20% { box-shadow: inset 0 0 0 2px var(--blue); } 100% { box-shadow: inset 0 0 0 0 rgba(32, 121, 237, 0); } }
+.ready-bar { color: var(--positive-text); border-color: var(--positive-line, #a6eb84); background: #ebfbe1; animation: reveal .3s var(--ease); }
+.pv-body { animation: reveal .3s var(--ease); }
+
+/* Checking again */
+.accordion[aria-busy="true"] { opacity: .55; transition: opacity .2s var(--ease); }
+.updated-flash { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; color: var(--positive-text); animation: fade-out 3.5s var(--ease) forwards; }
+@keyframes fade-out { 0% { opacity: 0; } 10%, 75% { opacity: 1; } 100% { opacity: 0; } }
+.empty .spinner { color: var(--blue); margin-bottom: 8px; }
+
+/* Toasts */
+.toasts { position: fixed; right: 20px; bottom: 20px; z-index: 120; display: grid; gap: 10px; width: min(380px, calc(100vw - 32px)); }
+.toast { display: grid; grid-template-columns: 24px minmax(0, 1fr) 28px; gap: 10px; align-items: start; padding: 12px 10px 12px 14px; border-radius: var(--r); background: var(--ink); color: #fff; box-shadow: var(--shadow-pop); animation: toast-in .3s var(--ease) both; }
+.toast strong { display: block; font-size: 14px; font-weight: 600; }
+.toast p { margin: 2px 0 0; font-size: 13px; color: #c9d2e0; line-height: 1.45; }
+.toast-icon { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: rgba(255, 255, 255, .12); }
+.toast.positive .toast-icon { background: #1f9d63; }
+.toast.critical .toast-icon { background: var(--critical); }
+.toast.attention .toast-icon { background: #c7780f; }
+.toast.info .toast-icon { background: var(--blue); }
+.toast .icon-btn { width: 28px; height: 28px; color: #c9d2e0; }
+.toast .icon-btn:hover { background: rgba(255, 255, 255, .1); color: #fff; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal-word { opacity: 1; }
+  .thinking-text { color: var(--ink); background: none; }
+  .spinner { animation: spin 1.6s linear infinite !important; }
+}
+@media (max-width: 860px) {
+  .toasts { right: 16px; left: 16px; width: auto; }
+}
+
+/* Chat pane stays in view as one unit, whatever the plan height */
+.frame { align-items: start; }
+.frame > .pane.request-pane { position: sticky; top: 112px; height: max(520px, calc(100vh - 290px)); max-height: 860px; }
+.request-pane .convo { min-height: 0; flex: 1; }
+.request-pane .thread { max-height: none; min-height: 0; }
+.request-pane .convo-empty { padding-top: 24px; }
+@media (max-width: 1100px) { .frame > .pane.request-pane { position: static; height: auto; max-height: none; } .request-pane .thread { max-height: 460px; } }
+.toasts { top: 112px; bottom: auto; }
+.request-pane .thread { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px); mask-image: linear-gradient(to bottom, transparent 0, #000 18px); padding-top: 14px; }
+@media (max-width: 860px) { .toasts { top: auto; bottom: 16px; } }

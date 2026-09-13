@@ -1,6 +1,6 @@
 import { FormEvent, KeyboardEvent, ReactNode, useEffect, useRef, useState } from "react";
 import type { EstateResponse, PlanRecord, RevisionRecord, RolloutRecord } from "../types.js";
-import { AccordionItem, Badge, Breadcrumbs, CopyField, Icon, type IconName } from "./components.js";
+import { AccordionItem, Badge, Breadcrumbs, CopyField, Icon, RevealText, Spinner, Thinking, type IconName } from "./components.js";
 import {
   formatTime,
   formatValue,
@@ -23,6 +23,10 @@ export interface Turn {
   kind: "message" | "question" | "planned" | "failure" | "pending";
   text: string;
   at: string;
+  /** Arrived this session and has not finished its entrance yet. */
+  fresh?: boolean;
+  /** The request to resend when a failed turn offers "Try again". */
+  retry?: string;
 }
 
 export interface DecisionContext {
@@ -73,6 +77,10 @@ type Props = {
   onRetry: () => void;
   onOpenDifferences: () => void;
   onHome: () => void;
+  onRetryRequest: (text: string) => void;
+  onTurnShown: (id: string) => void;
+  planArrivedId: string | null;
+  onPlanArrivalShown: () => void;
 };
 
 export function ChangesPage(props: Props) {
@@ -106,9 +114,10 @@ function RequestPane(props: Props) {
   const awaitingAnswer = lastTurn?.kind === "question";
   const [showIdeas, setShowIdeas] = useState(true);
 
+  const lastKind = props.turns[props.turns.length - 1]?.kind;
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: "smooth" });
-  }, [props.turns.length]);
+  }, [props.turns.length, lastKind]);
 
   useEffect(() => {
     if (props.decision || awaitingAnswer) inputRef.current?.focus();
@@ -117,12 +126,12 @@ function RequestPane(props: Props) {
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      props.onSubmit();
+      if (!props.agentBusy) props.onSubmit();
     }
   }
 
   return (
-    <section className="pane" aria-labelledby="request-title">
+    <section className="pane request-pane" aria-labelledby="request-title">
       <h2 className="pane-title" id="request-title">Your request</h2>
       <p className="pane-lede">Say what should change and where. Mention any locations to leave out.</p>
 
@@ -136,21 +145,38 @@ function RequestPane(props: Props) {
           <div className="thread" ref={threadRef} aria-live="polite" aria-label="Conversation">
             {props.turns.map((turn) =>
               turn.role === "operator" ? (
-                <div key={turn.id} className="msg-user">{turn.text}</div>
+                <div key={turn.id} className={`msg-user ${turn.fresh ? "pop" : ""}`}>{turn.text}</div>
               ) : (
-                <div key={turn.id} className={`msg-mise ${turn.kind}`}>
+                <div key={turn.id} className={`msg-mise ${turn.kind} ${turn.fresh ? "arrive" : ""}`}>
                   <div className="who">
-                    <span className="brand-mark" aria-hidden>M</span>
+                    <span className={`brand-mark ${turn.kind === "pending" ? "busy" : ""}`} aria-hidden>M</span>
                     <span>Mise</span>
                     {turn.kind === "question" && <Badge tone="attention">Needs your answer</Badge>}
                     {turn.kind === "failure" && <Badge tone="critical">Could not prepare</Badge>}
                     {turn.kind === "planned" && <Badge tone="info" icon="doc">Plan ready</Badge>}
                     {turn.kind !== "pending" && <span>{formatTime(turn.at)}</span>}
                   </div>
-                  <p>
-                    {turn.text}
-                    {turn.kind === "pending" && <span className="working" aria-hidden><i /><i /><i /></span>}
-                  </p>
+                  {turn.kind === "pending" ? (
+                    <Thinking since={turn.at} />
+                  ) : (
+                    <p aria-live="polite">
+                      <RevealText text={turn.text} animate={Boolean(turn.fresh)} onDone={() => props.onTurnShown(turn.id)} />
+                    </p>
+                  )}
+                  {turn.kind === "failure" && turn.retry && (
+                    <div className="msg-actions">
+                      <button type="button" className="btn sm" disabled={props.agentBusy} onClick={() => props.onRetryRequest(turn.retry!)}>
+                        <Icon name="refresh" size={13} />Try again
+                      </button>
+                    </div>
+                  )}
+                  {turn.kind === "planned" && !turn.fresh && (
+                    <div className="msg-actions">
+                      <button type="button" className="link" style={{ fontSize: 14 }} onClick={() => document.getElementById("plan-title")?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+                        Review the plan <Icon name="arrow" size={13} />
+                      </button>
+                    </div>
+                  )}
                 </div>
               ),
             )}
@@ -180,7 +206,7 @@ function RequestPane(props: Props) {
           </div>
         )}
 
-        <form onSubmit={props.onSubmit} className={`composer2 ${awaitingAnswer ? "question" : ""}`} style={{ marginTop: showIdeas ? 0 : 12 }}>
+        <form onSubmit={props.onSubmit} key={props.decision ? `decision-${props.decision.difference.id}-${props.decision.action}` : "composer"} className={`composer2 ${awaitingAnswer ? "question" : ""} ${props.agentBusy ? "busy" : ""} ${props.decision ? "pulse" : ""}`} aria-busy={props.agentBusy} style={{ marginTop: showIdeas ? 0 : 12 }}>
           <label htmlFor="request-input" className="sr-only">{awaitingAnswer ? "Answer Mise's question" : "Describe the change"}</label>
           <textarea
             id="request-input"
@@ -190,7 +216,6 @@ function RequestPane(props: Props) {
             onKeyDown={onKeyDown}
             placeholder={awaitingAnswer ? "Type your answer..." : "Write a request..."}
             rows={2}
-            disabled={props.agentBusy}
           />
           <div className="tools">
             <button type="button" className="tool" aria-pressed={showIdeas} onClick={() => setShowIdeas((value) => !value)}>
@@ -200,9 +225,13 @@ function RequestPane(props: Props) {
               <Icon name="differences" size={15} />Differences
             </button>
             <span className="spacer" />
-            <span className="hint">{props.agentBusy ? "Preparing a plan..." : "Enter to send"}</span>
-            <button className="send" aria-label={awaitingAnswer ? "Send answer" : "Send request"} disabled={props.agentBusy || !props.prompt.trim()}>
-              <Icon name="send" size={17} />
+            <span className="hint">{props.agentBusy ? "Mise is replying" : "Enter to send"}</span>
+            <button
+              className={`send ${props.agentBusy ? "working" : ""}`}
+              aria-label={props.agentBusy ? "Mise is replying" : awaitingAnswer ? "Send answer" : "Send request"}
+              disabled={props.agentBusy || !props.prompt.trim()}
+            >
+              {props.agentBusy ? <Spinner size={16} /> : <Icon name="send" size={17} />}
             </button>
           </div>
         </form>
@@ -228,10 +257,31 @@ function PlanPane(props: Props) {
       return next;
     });
 
+  const paneRef = useRef<HTMLElement>(null);
+  const arriving = Boolean(plan && props.planArrivedId === plan.plan_id);
+  useEffect(() => {
+    if (!arriving) return;
+    const node = paneRef.current;
+    if (node) {
+      const box = node.getBoundingClientRect();
+      if (box.top > window.innerHeight * 0.6 || box.bottom < 0) node.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    const timer = setTimeout(props.onPlanArrivalShown, 1600);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arriving]);
+
+  const working = props.agentBusy ? (
+    <div className="prompt-bar working-bar" role="status">
+      <Spinner size={16} />
+      <span>Working on your request. {plan ? "This plan will be replaced if a new one is prepared." : "A plan will appear here if one is prepared."}</span>
+    </div>
+  ) : null;
+
   if (!plan || !phase) {
     return (
-      <section className="pane" aria-label="Plan preview" style={{ background: "var(--surface)" }}>
-        <div className="prompt-bar"><Icon name="doc" size={18} />Send a request on the left to see a plan here</div>
+      <section className="pane" aria-label="Plan preview" style={{ background: "var(--surface)" }} ref={paneRef}>
+        {working ?? <div className="prompt-bar"><Icon name="doc" size={18} />Send a request on the left to see a plan here</div>}
         <div className="rows" style={{ marginTop: 24 }}>
           <div className="row-set"><div className="label">What you will see</div><div className="value">The exact settings that would change in Square, shown as before and after.</div></div>
           <div className="row-set"><div className="label">Where it applies</div><div className="value">Which of your {estate.observed_estate?.location_count ?? 0} locations are affected, and which are left alone.</div></div>
@@ -259,8 +309,13 @@ function PlanPane(props: Props) {
       : "Loading...";
 
   return (
-    <section className="pane" aria-labelledby="plan-title">
-      <div className="prompt-bar"><Icon name="doc" size={18} />Plan preview</div>
+    <section className={`pane ${arriving ? "arrived" : ""} ${props.agentBusy ? "stale" : ""}`} aria-labelledby="plan-title" ref={paneRef}>
+      {working ?? (
+        <div className={`prompt-bar ${arriving ? "ready-bar" : ""}`}>
+          <Icon name={arriving ? "check" : "doc"} size={18} />
+          {arriving ? "New plan ready to review" : "Plan preview"}
+        </div>
+      )}
 
       <div className="pv-head">
         <div style={{ minWidth: 0 }}>
@@ -280,7 +335,7 @@ function PlanPane(props: Props) {
         </div>
       )}
 
-      <div className="pv-body">
+      <div className="pv-body" key={plan.plan_id}>
         <div className="accordion compact" style={{ marginTop: 12 }}>
           <AccordionItem
             icon="changes"
@@ -462,10 +517,10 @@ function Footer(props: Props & { plan: PlanRecord; phase: PlanPhase; revision?: 
   let content: ReactNode;
   switch (phase) {
     case "review":
-      content = <>{lock}<button className="btn primary lg" onClick={props.onApprove} disabled={actionBusy || props.plan.artifact_verified === false}>{actionBusy ? "Approving..." : "Approve plan"}</button></>;
+      content = <>{lock}<button className="btn primary lg" onClick={props.onApprove} disabled={actionBusy || props.plan.artifact_verified === false}>{actionBusy ? <><Spinner />Approving</> : "Approve plan"}</button></>;
       break;
     case "ready_to_roll_out":
-      content = <><span className="note"><Icon name="check" size={14} />Approved. Square has not changed yet.</span><button className="btn dark lg" onClick={props.onApply} disabled={actionBusy}>{actionBusy ? "Starting..." : "Send to Square"} <Icon name="arrow" size={14} /></button></>;
+      content = <><span className="note"><Icon name="check" size={14} />Approved. Square has not changed yet.</span><button className="btn dark lg" onClick={props.onApply} disabled={actionBusy}>{actionBusy ? <><Spinner />Sending</> : <>Send to Square <Icon name="arrow" size={14} /></>}</button></>;
       break;
     case "policy_only_approved":
       content = <><span className="stamp positive"><Icon name="check" size={14} />Approved as {version}</span><span className="note">Nothing to send</span></>;
@@ -474,14 +529,14 @@ function Footer(props: Props & { plan: PlanRecord; phase: PlanPhase; revision?: 
       content = <span className="note"><Icon name="info" size={14} />A newer approved version replaced this plan, so it can no longer be sent.</span>;
       break;
     case "rolling_out":
-      content = <span className="note">Sending to Square<span className="working" aria-hidden><i /><i /><i /></span></span>;
+      content = <span className="note" role="status"><Spinner />Sending to Square. This page updates as it goes.</span>;
       break;
     case "verified":
       content = <span className="stamp positive"><Icon name="check" size={14} />Done. Square matches {version}.</span>;
       break;
     case "partial":
     case "failed":
-      content = <><span className="note">Trying again sends the same approved plan.</span><div className="btn-row"><button className="btn" onClick={props.onOpenDifferences}>Check differences</button><button className="btn dark" onClick={props.onRetry} disabled={actionBusy}>{actionBusy ? "Retrying..." : "Try again"}</button></div></>;
+      content = <><span className="note">Trying again sends the same approved plan.</span><div className="btn-row"><button className="btn" onClick={props.onOpenDifferences}>Check differences</button><button className="btn dark" onClick={props.onRetry} disabled={actionBusy}>{actionBusy ? <><Spinner />Starting</> : "Try again"}</button></div></>;
       break;
     case "uncertain":
       content = <><span className="note"><Icon name="alert" size={14} />Check what Square has before doing anything else.</span><button className="btn primary" onClick={props.onOpenDifferences}>Check differences</button></>;

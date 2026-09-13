@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { configuredClient, ConsoleApiError } from "./api/client.js";
 import { isTerminalRolloutStatus, subscribeToRolloutEvents } from "./api/events.js";
 import type { ConsolePage, EstateResponse, HistoryResponse, PlanRecord, RolloutRecord } from "./types.js";
-import { Banner, Dialog, Icon, type IconName } from "./live/components.js";
+import { Banner, Dialog, Icon, Spinner, Toasts, type IconName } from "./live/components.js";
 import { ChangesPage, type DecisionContext, type Turn } from "./live/ChangesPage.js";
 import {
   auditEntries,
@@ -15,6 +15,7 @@ import {
   planPhase,
   planWrites,
   rolloutForPlan,
+  rolloutSentence,
   type AuditEntry,
   type Difference,
 } from "./live/model.js";
@@ -43,6 +44,7 @@ const emptyHistory: HistoryResponse = { plans: [], approvals: [], rollouts: [], 
 
 type Notice = { tone: "critical" | "info" | "attention" | "positive"; text: string } | null;
 type Protected = { kind: "approve" } | { kind: "apply" } | { kind: "retry" };
+type Toast = { id: string; tone: "positive" | "critical" | "info" | "attention"; title: string; text?: string };
 
 const STATUS_RANK: Record<PlanRecord["status"], number> = {
   draft: 0, ready_for_review: 1, approved: 2, applied: 3, superseded: 4, cancelled: 4,
@@ -69,6 +71,16 @@ export default function LiveApp() {
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [dialogError, setDialogError] = useState<string | null>(null);
+  const [planArrivedId, setPlanArrivedId] = useState<string | null>(null);
+  const lastRolloutStatus = useRef<string | null>(null);
+
+  const toast = useCallback((tone: Toast["tone"], title: string, text?: string) => {
+    const id = crypto.randomUUID();
+    setToasts((current) => [...current.slice(-2), { id, tone, title, text }]);
+    setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), tone === "critical" ? 9000 : 5500);
+  }, []);
   const estateRef = useRef(estate);
   estateRef.current = estate;
 
@@ -121,6 +133,7 @@ export default function LiveApp() {
       setEstate(nextEstate);
       setHistory(nextHistory);
       setRollout(nextEstate.latest_rollout);
+      if (lastRolloutStatus.current === null && nextEstate.latest_rollout) lastRolloutStatus.current = nextEstate.latest_rollout.status;
       setActivePlanId((current) => current ?? latestPlanFrom(nextHistory)?.plan_id ?? null);
       setConnected(true);
       setNotice((current) => (current?.tone === "critical" ? null : current));
@@ -161,6 +174,7 @@ export default function LiveApp() {
     try {
       const next = await client.rollout(rolloutId);
       setRollout(next);
+      announceRollout(next);
       if (isTerminalRolloutStatus(next.status)) {
         await refreshLive({ conformance: true });
       }
@@ -169,24 +183,33 @@ export default function LiveApp() {
     }
   }
 
+  function announceRollout(next: RolloutRecord) {
+    const previous = lastRolloutStatus.current;
+    lastRolloutStatus.current = next.status;
+    if (!previous || previous === next.status || !isTerminalRolloutStatus(next.status)) return;
+    if (next.status === "converged") toast("positive", "Done. Square is updated and checked.", rolloutSentence(next));
+    else if (next.status === "partial") toast("attention", "Partly done", rolloutSentence(next));
+    else toast("critical", next.status === "outcome_uncertain" ? "Result unclear" : "The update failed", rolloutSentence(next));
+  }
+
   // ------------------------------------------------------------------ agent
 
-  async function submitPrompt(event?: FormEvent) {
+  async function submitPrompt(event?: FormEvent, override?: string) {
     event?.preventDefault();
-    const text = prompt.trim();
+    const text = (override ?? prompt).trim();
     if (!text || agentBusy) return;
     const pendingId = crypto.randomUUID();
     const now = new Date().toISOString();
-    setPrompt("");
+    if (override === undefined) setPrompt("");
     setDecision(null);
     setTurns((current) => [
       ...current,
-      { id: crypto.randomUUID(), role: "operator", kind: "message", text, at: now },
-      { id: pendingId, role: "mise", kind: "pending", text: "Reading your request and checking Square", at: now },
+      { id: crypto.randomUUID(), role: "operator", kind: "message", text, at: now, fresh: true },
+      { id: pendingId, role: "mise", kind: "pending", text: "Thinking", at: now },
     ]);
     setAgentBusy(true);
     const replacePending = (turn: Omit<Turn, "id" | "at">) =>
-      setTurns((current) => current.map((item) => (item.id === pendingId ? { ...turn, id: pendingId, at: new Date().toISOString() } : item)));
+      setTurns((current) => current.map((item) => (item.id === pendingId ? { ...turn, id: pendingId, at: new Date().toISOString(), fresh: true } : item)));
     try {
       const result = await client.agentMessage(text, sessionId);
       setSessionId(result.session_id);
@@ -203,6 +226,7 @@ export default function LiveApp() {
           const detail = await client.plan(planId);
           setDetails((current) => ({ ...current, [planId]: detail }));
           setActivePlanId(planId);
+          setPlanArrivedId(planId);
         }
       }
       await refreshLive();
@@ -211,7 +235,8 @@ export default function LiveApp() {
       replacePending({
         role: "mise",
         kind: "failure",
-        text: `I couldn't prepare a plan for that. ${message}. Nothing was approved or changed.`,
+        text: `I couldn't prepare a plan for that. ${sentence(message)} Nothing was approved or changed.`,
+        retry: text,
       });
     } finally {
       setAgentBusy(false);
@@ -236,34 +261,40 @@ export default function LiveApp() {
   async function runProtected(action: Protected, code: string) {
     if (!activePlan) return;
     setActionBusy(true);
+    setDialogError(null);
     try {
       if (action.kind === "approve") {
         const result = await client.approve(activePlan.plan_id, activePlan.plan_hash, code);
         setDetails((current) => ({ ...current, [activePlan.plan_id]: { ...current[activePlan.plan_id], ...result.plan } }));
-        setNotice({
-          tone: "positive",
-          text: isPolicyOnly(activePlan)
-            ? "Approved. This is now your approved setup. Square already had these values, so nothing needs to be sent."
-            : "Approved. This is now your approved setup. Square has not changed yet. Send it to Square when you are ready.",
-        });
-        await refreshLive({ conformance: true });
+        setDialog(null);
+        toast(
+          "positive",
+          "Plan approved",
+          isPolicyOnly(activePlan)
+            ? "This is now your approved setup. Square already had these values, so nothing needs to be sent."
+            : "This is now your approved setup. Square has not changed yet. Send it when you are ready.",
+        );
+        void refreshLive({ conformance: true });
       } else if (action.kind === "apply") {
         const next = await client.apply(activePlan.plan_id, code);
+        lastRolloutStatus.current = next.status;
         setRollout(next);
-        setNotice(null);
+        setDialog(null);
+        toast("info", "Sending to Square", "You can follow the progress in the plan. You'll get a message when it finishes.");
       } else if (action.kind === "retry" && activeRollout) {
         const next = await client.retry(activeRollout.rollout_id, code);
+        lastRolloutStatus.current = next.status;
         setRollout(next);
+        setDialog(null);
+        toast("info", "Trying again", "Mise is sending the same approved plan and will check the result.");
       }
-      setDialog(null);
     } catch (error) {
       if (error instanceof ConsoleApiError && (error.status === 401 || error.status === 403)) {
         setAccessCode("");
-        setNotice({ tone: "critical", text: "That operator code didn't work. Nothing was approved or changed." });
+        setDialogError("That operator code didn't work. Check it and try again. Nothing was approved or changed.");
       } else {
-        setNotice({ tone: "critical", text: errorMessage(error) });
+        setDialogError(`${sentence(errorMessage(error))} Nothing was changed.`);
       }
-      setDialog(null);
     } finally {
       setActionBusy(false);
     }
@@ -425,6 +456,10 @@ export default function LiveApp() {
               onRetry={() => setDialog({ kind: "retry" })}
               onOpenDifferences={() => { go("drift"); void checkConformance(); }}
               onHome={() => go("overview")}
+              onRetryRequest={(text) => void submitPrompt(undefined, text)}
+              onTurnShown={(id) => setTurns((current) => current.map((turn) => (turn.id === id ? { ...turn, fresh: false } : turn)))}
+              planArrivedId={planArrivedId}
+              onPlanArrivalShown={() => setPlanArrivedId(null)}
             />
           )}
           {page === "drift" && (
@@ -459,7 +494,7 @@ export default function LiveApp() {
       </div>
 
       {dialog?.kind === "unlock" && (
-        <UnlockDialog accessCode={accessCode} onSave={(code) => { setAccessCode(code); setDialog(null); }} onClose={() => setDialog(null)} />
+        <UnlockDialog accessCode={accessCode} onSave={(code) => { setAccessCode(code); setDialog(null); toast(code ? "positive" : "info", code ? "Updates turned on" : "Updates turned off", code ? "You can now approve plans and send them to Square from this tab." : "This tab is read-only again."); }} onClose={() => setDialog(null)} />
       )}
       {dialog && dialog.kind !== "unlock" && activePlan && (
         <ConfirmDialog
@@ -470,9 +505,12 @@ export default function LiveApp() {
           accessCode={accessCode}
           busy={actionBusy}
           onConfirm={(code) => { setAccessCode(code); void runProtected(dialog, code); }}
-          onClose={() => setDialog(null)}
+          onOpen={() => setDialogError(null)}
+          onClose={() => { if (!actionBusy) { setDialog(null); setDialogError(null); } }}
+          error={dialogError}
         />
       )}
+      <Toasts toasts={toasts} onDismiss={(id) => setToasts((current) => current.filter((item) => item.id !== id))} />
     </>
   );
 }
@@ -613,10 +651,14 @@ function ConfirmDialog(props: {
   locationCount: number;
   accessCode: string;
   busy: boolean;
+  error: string | null;
   onConfirm: (code: string) => void;
   onClose: () => void;
+  onOpen: () => void;
 }) {
   const [code, setCode] = useState(props.accessCode);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => props.onOpen(), []);
   const writes = planWrites(props.plan);
   const policyOnly = isPolicyOnly(props.plan);
   const title = props.plan.title || "this plan";
@@ -624,6 +666,7 @@ function ConfirmDialog(props: {
     approve: {
       heading: "Approve this plan?",
       button: "Approve plan",
+      busy: "Approving",
       body: policyOnly
         ? `“${title}” will become your approved setup. Square already has these values, so nothing will be sent.`
         : `“${title}” will become your approved setup. Approving does not change Square. You send it to Square as a separate step.`,
@@ -631,11 +674,13 @@ function ConfirmDialog(props: {
     apply: {
       heading: "Send this plan to Square?",
       button: "Send to Square",
+      busy: "Sending",
       body: `Mise will send exactly what was approved: ${writes.create} new, ${writes.update} changed and ${writes.remove} removed settings${props.targets !== null ? `, at ${props.targets} of ${props.locationCount} locations` : ""}. Then it reads Square back to confirm.`,
     },
     retry: {
       heading: "Try sending again?",
       button: "Try again",
+      busy: "Starting",
       body: "Mise will send the same approved plan again and check the result. It helps to look at Differences first so you know what Square has now.",
     },
   }[props.action.kind];
@@ -647,8 +692,8 @@ function ConfirmDialog(props: {
       footer={
         <>
           <button className="btn" onClick={props.onClose} disabled={props.busy}>Cancel</button>
-          <button className={`btn ${props.action.kind === "approve" ? "primary" : "dark"}`} onClick={() => props.onConfirm(code.trim())} disabled={props.busy || !code.trim()}>
-            {props.busy ? "Working..." : copy.button}
+          <button className={`btn ${props.action.kind === "approve" ? "primary" : "dark"}`} onClick={() => props.onConfirm(code.trim())} disabled={props.busy || !code.trim()} aria-busy={props.busy}>
+            {props.busy ? <><Spinner />{copy.busy}</> : copy.button}
           </button>
         </>
       }
@@ -657,7 +702,12 @@ function ConfirmDialog(props: {
       <p className="muted" style={{ fontSize: 12 }}>
         Approval code <span className="mono">{props.plan.plan_hash.slice(0, 12)}...{props.plan.plan_hash.slice(-10)}</span>
       </p>
-      {!props.accessCode && (
+      {props.error && (
+        <div className="callout critical" role="alert" style={{ margin: "0 0 12px" }}>
+          <div><b><Icon name="alert" size={14} />Not done</b><span>{props.error}</span></div>
+        </div>
+      )}
+      {(!props.accessCode || props.error) && (
         <label className="field">
           <span>Operator code</span>
           <input data-autofocus type="password" autoComplete="off" value={code} onChange={(event) => setCode(event.target.value)} />
@@ -700,6 +750,14 @@ function readableAgentResponse(value: unknown): string {
     if (typeof record[key] === "string") return String(record[key]);
   }
   return "Mise replied. See the plan on the right for details.";
+}
+
+/** Capitalize and end with a full stop so API messages read as sentences. */
+function sentence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "Something went wrong.";
+  const capital = trimmed[0]!.toUpperCase() + trimmed.slice(1);
+  return /[.!?]$/.test(capital) ? capital : `${capital}.`;
 }
 
 function errorMessage(error: unknown): string {

@@ -342,3 +342,82 @@ export function Dialog({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Progress cues
+
+export function Spinner({ size = 14, label }: { size?: number; label?: string }) {
+  return (
+    <span className="spinner" style={{ width: size, height: size }} role={label ? "status" : undefined} aria-label={label} aria-hidden={label ? undefined : true} />
+  );
+}
+
+/** Elapsed-time counter for work whose duration the backend does not report. */
+export function useElapsed(since: string | null): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!since) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [since]);
+  return since ? Math.max(0, Math.floor((now - new Date(since).getTime()) / 1000)) : 0;
+}
+
+export function Thinking({ since }: { since: string }) {
+  const seconds = useElapsed(since);
+  const slow = seconds >= 15;
+  return (
+    <div className="thinking" role="status" aria-live="polite">
+      <span className="thinking-dots" aria-hidden><i /><i /><i /></span>
+      <span className="thinking-text">Mise is working on your request</span>
+      <span className="thinking-time" aria-hidden>{seconds}s</span>
+      {slow && <span className="thinking-note">Still working. Checking Square and preparing a plan can take up to a minute.</span>}
+    </div>
+  );
+}
+
+/**
+ * Reveals a finished reply word by word, the way chat assistants present a
+ * response. Screen readers get the whole text once; the animation is visual
+ * only and is skipped when the viewer prefers reduced motion.
+ */
+export function RevealText({ text, animate, onDone }: { text: string; animate: boolean; onDone?: () => void }) {
+  const words = text.split(/(\s+)/);
+  const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const run = animate && !reduce;
+  const step = Math.max(6, Math.min(28, 900 / Math.max(1, words.length)));
+  useEffect(() => {
+    if (!animate) return;
+    const timer = setTimeout(() => onDone?.(), run ? words.length * step + 300 : 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [animate]);
+  if (!run) return <>{text}</>;
+  return (
+    <>
+      <span className="sr-only">{text}</span>
+      <span aria-hidden>
+        {words.map((word, index) => (
+          <span key={index} className="reveal-word" style={{ animationDelay: `${index * step}ms` }}>{word}</span>
+        ))}
+      </span>
+    </>
+  );
+}
+
+export function Toasts({ toasts, onDismiss }: { toasts: Array<{ id: string; tone: "positive" | "critical" | "info" | "attention"; title: string; text?: string }>; onDismiss: (id: string) => void }) {
+  return (
+    <div className="toasts" aria-live="polite" aria-relevant="additions">
+      {toasts.map((item) => (
+        <div key={item.id} className={`toast ${item.tone}`} role={item.tone === "critical" ? "alert" : "status"}>
+          <span className="toast-icon"><Icon name={item.tone === "positive" ? "check" : item.tone === "critical" ? "alert" : item.tone === "attention" ? "diamond" : "info"} size={14} /></span>
+          <div>
+            <strong>{item.title}</strong>
+            {item.text && <p>{item.text}</p>}
+          </div>
+          <button type="button" className="icon-btn" aria-label="Dismiss" onClick={() => onDismiss(item.id)}><Icon name="cross" size={13} /></button>
+        </div>
+      ))}
+    </div>
+  );
+}
