@@ -49,6 +49,19 @@ export class AwsAgentCoreInvoker implements AgentInvoker {
       },
     );
   }
+
+  async readConformance(organizationId: string): Promise<unknown> {
+    return invokeJson(
+      this.client,
+      this.runtimeArn,
+      agentCoreSessionId("read", `conformance:${organizationId}:${randomUUID()}`),
+      this.qualifier,
+      {
+        mode: "conformance",
+        organization_id: organizationId,
+      },
+    );
+  }
 }
 
 export class AwsAgentCoreApplyRuntime implements ApplyRuntime {
