@@ -102,3 +102,35 @@ def test_clear_request_renders_then_generates_governed_plan(tmp_path: Path) -> N
     assert ".mise/governance/plans/" in portable_plan_path
     rendered = yaml.safe_load((root / "taxes.yaml").read_text(encoding="utf-8"))
     assert rendered["resources"][0]["properties"]["percentage"] == "6.5"
+
+
+def test_percentage_discount_is_normalized_before_render(tmp_path: Path) -> None:
+    root = workspace(tmp_path)
+    runner = FakeRunner(root)
+    intent = ChangeIntent(
+        title="Staff discount",
+        interpretation="Add a 10% staff discount.",
+        selector=LocationSelector(states=["IA"]),
+        changes=[
+            ResourceMutation(
+                resource_type="square_catalog_discount",
+                resource_name="staff_discount",
+                properties={"percentage": 10},
+            )
+        ],
+    )
+    analysis = IntentAnalysis(
+        needs_clarification=False,
+        interpretation=intent.interpretation,
+        intent=intent,
+    )
+    service = MiseOperationsAgent(root, runner, FakeAgent(analysis))
+
+    result = service.prepare_plan("Add a 10% staff discount")
+
+    assert result.status == "planned"
+    rendered = yaml.safe_load((root / "discounts.yaml").read_text(encoding="utf-8"))
+    resource = rendered["resources"][0]
+    assert resource["properties"]["name"] == "Staff Discount"
+    assert resource["properties"]["discount_type"] == "FIXED_PERCENTAGE"
+    assert resource["properties"]["percentage"] == "10"
