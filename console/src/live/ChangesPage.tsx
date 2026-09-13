@@ -22,9 +22,7 @@ export interface Turn {
   kind: "message" | "question" | "planned" | "failure" | "pending";
   text: string;
   at: string;
-  /** Arrived this session and has not finished its entrance yet. */
   fresh?: boolean;
-  /** The request to resend when a failed turn offers "Try again". */
   retry?: string;
 }
 
@@ -87,7 +85,6 @@ type Props = {
 export function ChangesPage(outer: Props) {
   const [panelOpen, setPanelOpen] = useState(Boolean(outer.plan));
   const onTogglePanel = (open?: boolean) => setPanelOpen((current) => open ?? !current);
-  // A newly prepared plan pulls the panel in.
   useEffect(() => { if (outer.planArrivedId) setPanelOpen(true); }, [outer.planArrivedId]);
   const props = { ...outer, panelOpen, onTogglePanel };
   const badge = props.plan && props.phase ? PHASE_BADGE[props.phase] : null;
@@ -119,9 +116,6 @@ export function ChangesPage(outer: Props) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Left pane: conversation with a rounded composer
-
 function RequestPane(props: Props) {
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -147,7 +141,6 @@ function RequestPane(props: Props) {
 
   return (
     <section className="chat request-pane" aria-label="Request">
-
       <div className="convo">
         {props.turns.length === 0 ? (
           <div className="convo-empty">
@@ -201,7 +194,7 @@ function RequestPane(props: Props) {
             <div>
               <b><Icon name="differences" size={14} />{props.decision.action === "restore" ? "Put back the approved value" : "Keep the value in Square"}</b>
               <span>
-                {props.decision.difference.resourceLabel}, {props.decision.difference.property.toLowerCase()}:{" "}
+                {props.decision.difference.resourceLabel}, {props.decision.difference.property.toLowerCase()}: {" "}
                 <span className="val">{props.decision.action === "restore" ? props.decision.difference.approved : props.decision.difference.squareNow}</span>.
               </span>
             </div>
@@ -253,20 +246,16 @@ function RequestPane(props: Props) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Right pane: the plan, as expandable sections
-
 type Section = "changes" | "where" | "progress" | "raw";
 function PlanPane(props: Props) {
   const { plan, phase, rollout, estate } = props;
   const [open, setOpen] = useState<Set<Section>>(new Set(["changes", "progress"]));
   useEffect(() => setOpen(new Set(["changes", "progress"])), [plan?.plan_id]);
-  const toggle = (key: Section) =>
-    setOpen((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
+  const toggle = (key: Section) => setOpen((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
 
   const paneRef = useRef<HTMLElement>(null);
   const arriving = Boolean(plan && props.planArrivedId === plan.plan_id);
@@ -274,7 +263,6 @@ function PlanPane(props: Props) {
     if (!arriving) return;
     const timer = setTimeout(props.onPlanArrivalShown, 1600);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arriving]);
 
   const working = props.agentBusy ? (
@@ -311,18 +299,13 @@ function PlanPane(props: Props) {
   return (
     <section className={`pane ${arriving ? "arrived" : ""} ${props.agentBusy ? "stale" : ""}`} aria-labelledby="plan-title" ref={paneRef}>
       {working ?? (arriving && (
-        <div className="prompt-bar ready-bar">
-          <Icon name="check" size={18} />New plan ready
-        </div>
+        <div className="prompt-bar ready-bar"><Icon name="check" size={18} />New plan ready</div>
       ))}
 
       <div className="pv-head">
         <div style={{ minWidth: 0 }}>
           <h3 id="plan-title">{title}</h3>
-          <div className="sub">
-            <Badge tone={badge.tone}>{badge.label}</Badge>
-            <span>{formatTime(plan.created_at)}</span>
-          </div>
+          <div className="sub"><Badge tone={badge.tone}>{badge.label}</Badge><span>{formatTime(plan.created_at)}</span></div>
         </div>
       </div>
 
@@ -334,23 +317,9 @@ function PlanPane(props: Props) {
 
       <div className="pv-body" key={plan.plan_id}>
         <div className="accordion compact" style={{ marginTop: 12 }}>
-          <AccordionItem
-            icon="changes"
-            title="What changes"
-            subtitle={policyOnly ? "Square already has this value" : plan.changes ? `${changeCount} setting${changeCount === 1 ? "" : "s"} in Square` : "Loading..."}
-            open={open.has("changes")}
-            onToggle={() => toggle("changes")}
-          >
+          <AccordionItem icon="changes" title="What changes" subtitle={policyOnly ? "Square already has this value" : plan.changes ? `${changeCount} setting${changeCount === 1 ? "" : "s"} in Square` : "Loading..."} open={open.has("changes")} onToggle={() => toggle("changes")}>
             {policyOnly ? (
-              <div className="policy-only">
-                <Icon name="info" />
-                <div>
-                  <strong>No update to Square is needed.</strong>
-                  {phase === "review"
-                    ? "Square already has this value. Approving makes it the official setup, so future checks compare against it."
-                    : "Square already had this value, so it became the official setup without sending anything."}
-                </div>
-              </div>
+              <div className="policy-only"><Icon name="info" /><div><strong>No update to Square is needed.</strong>{phase === "review" ? "Square already has this value. Approving makes it the official setup, so future checks compare against it." : "Square already had this value, so it became the official setup without sending anything."}</div></div>
             ) : !plan.changes ? (
               <p className="muted"><span className="skeleton" /> Loading the changes...</p>
             ) : plan.changes.length === 0 ? (
@@ -449,9 +418,16 @@ function Progress({ plan, phase, rollout, revision }: { plan: PlanRecord; phase:
   } else if (rollout) {
     const s = rollout.status;
     const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
+    const applyState = s === "queued" || s === "applying"
+      ? "now"
+      : s === "failed"
+        ? "bad"
+        : s === "outcome_uncertain" || s === "partial"
+          ? "warn"
+          : "done";
     steps.push({
       key: "apply", icon: "rollout",
-      state: s === "queued" || s === "applying" ? "now" : s === "failed" ? "bad" : s === "outcome_uncertain" ? "warn" : "done",
+      state: applyState,
       title: "Send to Square",
       sub: `${rollout.changes_completed} of ${rollout.changes_total} settings sent`,
       meter: s === "applying" ? pct(rollout.changes_completed, rollout.changes_total) : undefined,
@@ -521,9 +497,6 @@ function Footer(props: Props & { plan: PlanRecord; phase: PlanPhase; revision?: 
   }
   return <div className="pv-foot">{content}</div>;
 }
-
-// ---------------------------------------------------------------------------
-// All plans
 
 function PlanHistory(props: Props) {
   const plans = [...props.plans].sort((a, b) => b.created_at.localeCompare(a.created_at));
