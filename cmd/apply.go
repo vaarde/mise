@@ -129,11 +129,19 @@ func runApply(cmd *cobra.Command, args []string) error {
 		Checkpoint: func(s *state.State) error { return s.Save(ws.Dir) },
 	})
 
-	if saveErr := st.Save(ws.Dir); saveErr != nil {
-		if applyErr != nil {
-			return fmt.Errorf("%w (and the state file could not be saved: %v)", applyErr, saveErr)
+	// A saved plan's state serial is part of its safety contract. If the
+	// provider rejected the whole write before anything landed, advancing
+	// that serial would make an otherwise safe retry look stale even though
+	// the live POS and Mise state are unchanged. Persist state on success or
+	// after a genuine partial success; leave it untouched on a zero-write
+	// failure so the exact approved plan remains retryable.
+	if applyErr == nil || result.Total() > 0 {
+		if saveErr := st.Save(ws.Dir); saveErr != nil {
+			if applyErr != nil {
+				return fmt.Errorf("%w (and the state file could not be saved: %v)", applyErr, saveErr)
+			}
+			return saveErr
 		}
-		return saveErr
 	}
 
 	if applyJSON {
