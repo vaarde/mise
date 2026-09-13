@@ -30,6 +30,7 @@ import {
 } from "./live/pages.js";
 
 const client = configuredClient();
+const MOCK = ["1", "true"].includes(String(import.meta.env.VITE_MOCK_API ?? "").toLowerCase());
 
 const emptyEstate: EstateResponse = {
   organization_id: "",
@@ -352,10 +353,10 @@ export default function LiveApp() {
     <>
       <div className="env-strip" role="note">
         <span>{orgName || "Mise"}</span>
-        <span className="mid"><Icon name="flask" size={14} /><b>Square Sandbox</b><span className="extra"> (test locations, not real restaurants)</span></span>
+        <span className="mid"><Icon name="flask" size={14} />{MOCK ? <><b>Local mock data</b><span className="extra"> (not connected to Square or AWS)</span></> : <><b>Square Sandbox</b><span className="extra"> (test locations, not real restaurants)</span></>}</span>
         <span className="right">
           <span className={`dot ${loading ? "" : connected ? "on" : "off"}`} aria-hidden />
-          {loading ? "Connecting..." : connected ? "Live data" : "Disconnected"}
+          {loading ? "Connecting..." : connected ? (MOCK ? "Mock API" : "Live data") : "Disconnected"}
         </span>
       </div>
       <div className="shell">
@@ -376,7 +377,7 @@ export default function LiveApp() {
           <div className="side-foot">
             <div className="conn" role="status">
               <span className={`dot ${loading ? "" : connected ? "on" : "off"}`} aria-hidden />
-              <span><strong>{loading ? "Connecting..." : connected ? "Connected" : "Disconnected"}</strong><br />Live data only, never samples</span>
+              <span><strong>{loading ? "Connecting..." : connected ? "Connected" : "Disconnected"}</strong><br />{MOCK ? "Local mock API, sample data" : "Live data only, never samples"}</span>
             </div>
           </div>
         </aside>

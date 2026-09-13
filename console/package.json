@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "node dev/run-mock.mjs",
     "build": "tsc -b && vite build",
     "test": "tsx --test src/**/*.test.ts"
   },

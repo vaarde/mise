@@ -1,53 +1,33 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import LiveApp from "./LiveApp.js";
+import "./live/mise.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
-const appRoot = createRoot(root);
+
+document.body.classList.add("mise");
 
 const hasLiveApi = Boolean((import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim());
-const localDemo = ["1", "true", "yes"].includes(
-  ((import.meta.env.VITE_LOCAL_DEMO as string | undefined) ?? "").trim().toLowerCase(),
-);
 
 // The console never substitutes fixture data for the live estate. Without an
-// API it says so unless local demo mode is explicitly requested.
+// API it says so, and points at the local mock for previewing the UI.
 function NotConfigured() {
   return (
     <main className="standalone">
-      <div className="box">
+      <div className="card">
         <span className="brand-mark" aria-hidden>M</span>
-        <h1>Mise API not configured</h1>
-        <p className="muted">
-          Set <code className="mono">VITE_API_BASE_URL</code> to the Mise public API and rebuild. No stand-in data is shown.
-        </p>
+        <h1>Mise isn't connected to an API</h1>
+        <p className="muted">To preview the console with sample data, stop this server and run:</p>
+        <pre className="raw" style={{ whiteSpace: "pre-wrap" }}>npm run dev:mock</pre>
+        <p className="muted">To use the live AWS API, set <code className="mono">VITE_API_BASE_URL</code> in <code className="mono">console/.env.local</code> and restart <code className="mono">npm run dev</code>.</p>
       </div>
     </main>
   );
 }
 
-async function render() {
-  if (localDemo) {
-    document.body.classList.add("demo");
-    await import("./styles.css");
-    await import("./polished.css");
-    const { default: LocalDemoApp } = await import("./PolishedApp.js");
-    appRoot.render(
-      <StrictMode>
-        <LocalDemoApp />
-      </StrictMode>,
-    );
-    return;
-  }
-
-  document.body.classList.add("mise");
-  await import("./live/mise.css");
-  const { default: LiveApp } = await import("./LiveApp.js");
-  appRoot.render(
-    <StrictMode>
-      {hasLiveApi ? <LiveApp /> : <NotConfigured />}
-    </StrictMode>,
-  );
-}
-
-void render();
+createRoot(root as HTMLElement).render(
+  <StrictMode>
+    {hasLiveApi ? <LiveApp /> : <NotConfigured />}
+  </StrictMode>,
+);
