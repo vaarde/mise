@@ -7,6 +7,31 @@ export class ConsoleApiError extends Error {
   }
 }
 
+interface ConformanceDiff {
+  path: string;
+  old_value?: unknown;
+  new_value?: unknown;
+}
+
+interface ConformanceChange {
+  action: number;
+  resource_type: string;
+  resource_name: string;
+  provider_id?: string;
+  location_ids?: string[];
+  diffs?: ConformanceDiff[];
+}
+
+interface ConformanceResponse {
+  status: "ok";
+  organization_id: string;
+  conformance: {
+    changes: ConformanceChange[];
+    summary: { to_create: number; to_update: number; to_delete: number };
+    checked: number;
+  };
+}
+
 export class MiseConsoleClient {
   private readonly planCache = new Map<string, PlanRecord>();
 
@@ -24,7 +49,18 @@ export class MiseConsoleClient {
     return this.request<EstateResponse>("/live-estate");
   }
 
-  drift(): Promise<LiveDriftResponse> {
+  /**
+   * The Differences UI is about current desired-state conformance, not the
+   * historical drift audit. Keep the legacy method name inside this client so
+   * the present UI can remain stable while its data source is corrected.
+   */
+  async drift(): Promise<LiveDriftResponse> {
+    const response = await this.request<ConformanceResponse>("/conformance");
+    return conformanceAsDifferences(response);
+  }
+
+  /** Historical audit: live Square versus Mise's last checkpointed state. */
+  auditDrift(): Promise<LiveDriftResponse> {
     return this.request<LiveDriftResponse>("/drift");
   }
 
@@ -120,6 +156,36 @@ export class MiseConsoleClient {
     }
     return payload as T;
   }
+}
+
+function conformanceAsDifferences(response: ConformanceResponse): LiveDriftResponse {
+  return {
+    status: "ok",
+    organization_id: response.organization_id,
+    drift: {
+      checked: response.conformance.checked,
+      drifted: response.conformance.changes.map((change) => {
+        const missing = change.action === 1;
+        return {
+          full_name: `${change.resource_type}.${change.resource_name}`,
+          resource_type: change.resource_type,
+          resource_name: change.resource_name,
+          provider_id: change.provider_id ?? "",
+          location_ids: change.location_ids ?? [],
+          reason: missing ? "deleted" : "changed",
+          diffs: missing
+            ? []
+            : (change.diffs ?? []).map((diff) => ({
+                path: diff.path,
+                // Mise plan diffs are live -> desired. The Differences screen
+                // presents desired/managed first and observed Square second.
+                old_value: diff.new_value,
+                new_value: diff.old_value,
+              })),
+        };
+      }),
+    },
+  };
 }
 
 export function startsFreshGovernanceDecision(prompt: string): boolean {
