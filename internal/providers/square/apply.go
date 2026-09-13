@@ -536,12 +536,14 @@ func slugForID(name string) string {
 	return slug
 }
 
-// idempotencyKey derives a stable key from what is being written.
+// idempotencyKey derives a stable key from the exact Square write inputs.
 //
 // Square requires a key on every catalog mutation. Deriving it from the
 // operations themselves means a retry after a timeout replays the same
 // key and Square returns the original result, rather than creating a
-// duplicate set of objects.
+// duplicate set of objects. The concurrency version is part of the key
+// because Square also includes it in the request body: a newer object
+// version is a different write, even when the desired properties match.
 func idempotencyKey(ops []provider.WriteOperation) string {
 	parts := make([]string, 0, len(ops))
 	for _, op := range ops {
@@ -556,6 +558,7 @@ func idempotencyKey(ops []provider.WriteOperation) string {
 			string(op.Action),
 			op.Name,
 			op.Resource.ProviderID,
+			op.Resource.Version,
 			strings.Join(locations, ","),
 			string(properties),
 		}, "\x00"))
