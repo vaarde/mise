@@ -58,6 +58,39 @@ def find_configuration_resource(
     return {"resource": None}
 
 
+def resolve_location_query(
+    context: ToolContext,
+    *,
+    states: list[str] | None = None,
+    cities: list[str] | None = None,
+    location_names: list[str] | None = None,
+    groups: list[str] | None = None,
+) -> dict[str, Any]:
+    """Resolve geographic/name selectors and return enough detail for agent review."""
+    from .models import LocationSelector
+
+    selector = LocationSelector(
+        states=states or [],
+        cities=cities or [],
+        location_names=location_names or [],
+        groups=groups or [],
+    )
+    ids = context.locations.resolve(selector)
+    wanted = set(ids)
+    matches = [
+        {
+            "id": location.id,
+            "name": location.name,
+            "state": location.state,
+            "city": location.city,
+        }
+        for location in context.locations.locations
+        if location.id in wanted
+    ]
+    matches.sort(key=lambda item: item["id"])
+    return {"location_ids": ids, "count": len(ids), "locations": matches}
+
+
 def build_read_tools(context: ToolContext) -> list[Any]:
     @tool
     def get_estate_summary() -> dict[str, Any]:
@@ -67,23 +100,29 @@ def build_read_tools(context: ToolContext) -> list[Any]:
     @tool
     def resolve_locations(
         states: list[str] | None = None,
+        cities: list[str] | None = None,
         location_names: list[str] | None = None,
         groups: list[str] | None = None,
     ) -> dict[str, Any]:
         """Resolve a proposed location selector without changing configuration.
 
+        Use structured geography for geographic language. For example, "Savannah"
+        in "Georgia except Savannah" is a city exclusion, not necessarily a POS
+        location name.
+
         Args:
             states: US state codes to include.
-            location_names: Exact imported location names to include.
+            cities: City/locality names to include.
+            location_names: Exact imported POS location names to include.
             groups: Existing Mise location group names to include.
         """
-        from .models import LocationSelector
-
-        selector = LocationSelector(
-            states=states or [], location_names=location_names or [], groups=groups or []
+        return resolve_location_query(
+            context,
+            states=states,
+            cities=cities,
+            location_names=location_names,
+            groups=groups,
         )
-        ids = context.locations.resolve(selector)
-        return {"location_ids": ids, "count": len(ids)}
 
     @tool
     def inspect_configuration(resource_type: str, resource_name: str) -> dict[str, Any]:
