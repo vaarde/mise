@@ -24,9 +24,20 @@ export function subscribeToRolloutEvents(
   ]);
 
   let terminalReceived = false;
+  let disposed = false;
+  let errorTimer: ReturnType<typeof setTimeout> | undefined;
   const listeners = new Map<string, EventListener>();
+
+  const clearPendingError = () => {
+    if (errorTimer !== undefined) {
+      clearTimeout(errorTimer);
+      errorTimer = undefined;
+    }
+  };
+
   for (const type of eventTypes) {
     const listener: EventListener = (raw) => {
+      clearPendingError();
       const message = raw as MessageEvent<string>;
       let data: Record<string, unknown> = {};
       try {
@@ -35,9 +46,9 @@ export function subscribeToRolloutEvents(
         data = { raw: message.data };
       }
       onEvent({ sequence: Number(message.lastEventId || 0), type, data });
-      // API Gateway returns a finite replay stream. Once a terminal event is
-      // observed, the normal EOF is not a connectivity failure and must not
-      // surface a misleading "reconnecting" banner in the console.
+
+      // API Gateway serves rollout events as a finite replay stream. A terminal
+      // event followed by EOF is completion, not a broken live connection.
       if (terminalEventTypes.has(type)) {
         terminalReceived = true;
         source.close();
@@ -46,12 +57,25 @@ export function subscribeToRolloutEvents(
     listeners.set(type, listener);
     source.addEventListener(type, listener);
   }
+
   source.onerror = (event) => {
-    if (!terminalReceived) onError?.(event);
+    if (terminalReceived || disposed) return;
+
+    // Browsers may emit EventSource.onerror as a finite SSE response closes
+    // before the queued terminal event listener runs. Delay surfacing the
+    // transport warning briefly; any event (especially rollout_complete)
+    // cancels it. Genuine connectivity failures still become visible.
+    clearPendingError();
+    errorTimer = setTimeout(() => {
+      errorTimer = undefined;
+      if (!terminalReceived && !disposed) onError?.(event);
+    }, 1200);
   };
 
   return () => {
+    disposed = true;
     terminalReceived = true;
+    clearPendingError();
     for (const [type, listener] of listeners) source.removeEventListener(type, listener);
     source.close();
   };
