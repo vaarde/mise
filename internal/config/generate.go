@@ -198,6 +198,7 @@ func GenerateLocationsFile(workDir string, locations []provider.Location) (strin
 		addScalar(entry, "id", l.ID)
 		addScalar(entry, "name", l.Name)
 		addScalarIfSet(entry, "state", l.State)
+		addScalarIfSet(entry, "city", l.Metadata["city"])
 		addScalarIfSet(entry, "timezone", l.Timezone)
 		addScalarIfSet(entry, "address", l.Address)
 		addScalarIfSet(entry, "status", l.Metadata["status"])
