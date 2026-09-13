@@ -66,6 +66,7 @@ class ApplyFailure(StrictModel):
     resource: str
     action: str
     message: str
+    code: str = ""
 
 
 class ApplyResult(StrictModel):
