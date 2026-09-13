@@ -7,7 +7,6 @@ import {
   AwsMutationLock,
   AwsS3ArtifactStore,
 } from "../aws/storage.js";
-import type { PlanRecord } from "../core/contracts.js";
 import { MiseApiService } from "../core/service.js";
 import { createHttpHandler } from "./http.js";
 
@@ -43,11 +42,11 @@ export async function handler(
 
   if (method === "GET" && path === "/live-estate") {
     try {
-      const [estate, plans] = await Promise.all([
+      const [estate, conformance] = await Promise.all([
         service.estate(),
-        metadata.list<PlanRecord>(organizationId, "plan"),
+        agentCore.readConformance(organizationId),
       ]);
-      const observedEstate = await loadObservedEstate(plans);
+      const observedEstate = observedEstateFromConformance(conformance);
       return json(200, { ...estate, observed_estate: observedEstate });
     } catch (error) {
       console.error("live estate read failed", error);
@@ -85,28 +84,12 @@ export async function handler(
   return baseHandler(event);
 }
 
-async function loadObservedEstate(plans: PlanRecord[]): Promise<Record<string, unknown>> {
-  const latest = [...plans].sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
-  if (!latest) {
-    return {
-      source: "unavailable",
-      observed_at: null,
-      location_count: 0,
-      states: {},
-      groups: [],
-      locations: [],
-    };
-  }
-
-  const bytes = await artifacts.getBytes(latest.artifact_s3_key);
-  const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
-  const nested = parsed.plan;
-  const plan = nested && typeof nested === "object" && !Array.isArray(nested)
-    ? nested as Record<string, unknown>
-    : parsed;
-  const rawLocations = Array.isArray(plan.locations) ? plan.locations : [];
+export function observedEstateFromConformance(value: unknown): Record<string, unknown> {
+  const root = asRecord(value);
+  const conformance = asRecord(root.conformance);
+  const rawLocations = Array.isArray(conformance.locations) ? conformance.locations : [];
   const locations = rawLocations.filter(
-    (value): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value),
+    (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item),
   );
   const states: Record<string, number> = {};
   for (const location of locations) {
@@ -115,14 +98,19 @@ async function loadObservedEstate(plans: PlanRecord[]): Promise<Record<string, u
   }
 
   return {
-    source: "latest_governed_plan",
-    source_plan_id: latest.plan_id,
-    observed_at: latest.created_at,
+    source: "current_governed_workspace",
+    observed_at: new Date().toISOString(),
     location_count: locations.length,
     states,
     groups: ["all"],
     locations,
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function json(statusCode: number, value: unknown): APIGatewayProxyStructuredResultV2 {
