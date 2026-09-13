@@ -46,7 +46,7 @@ export function propertyLabel(path: string): string {
 }
 
 export function formatValue(path: string, value: unknown, locationNames?: Map<string, string>): string {
-  if (value === undefined || value === null || value === "") return "—";
+  if (value === undefined || value === null || value === "") return "Not set";
   if (/percentage/i.test(path) && (typeof value === "string" || typeof value === "number")) return `${value}%`;
   if (Array.isArray(value)) {
     if (!value.length) return "None";
@@ -57,7 +57,7 @@ export function formatValue(path: string, value: unknown, locationNames?: Map<st
 }
 
 export function formatTime(value: string | null | undefined): string {
-  if (!value) return "—";
+  if (!value) return "Not recorded";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
@@ -208,25 +208,25 @@ export type Tone = "positive" | "attention" | "critical" | "neutral" | "info";
 
 export function rolloutStatusLabel(status: RolloutStatus): { label: string; tone: Tone } {
   switch (status) {
-    case "queued": return { label: "Queued", tone: "info" };
-    case "applying": return { label: "Updating Square", tone: "info" };
-    case "verifying": return { label: "Verifying", tone: "info" };
-    case "converged": return { label: "Verified", tone: "positive" };
-    case "partial": return { label: "Partially verified", tone: "attention" };
-    case "outcome_uncertain": return { label: "Outcome uncertain", tone: "critical" };
+    case "queued": return { label: "Waiting to start", tone: "info" };
+    case "applying": return { label: "Sending to Square", tone: "info" };
+    case "verifying": return { label: "Checking Square", tone: "info" };
+    case "converged": return { label: "Done and checked", tone: "positive" };
+    case "partial": return { label: "Partly done", tone: "attention" };
+    case "outcome_uncertain": return { label: "Result unclear", tone: "critical" };
     case "failed": return { label: "Failed", tone: "critical" };
   }
 }
 
 export function rolloutSentence(rollout: RolloutRecord): string {
   switch (rollout.status) {
-    case "queued": return "Waiting to start the Square update.";
-    case "applying": return `Updating Square · ${rollout.changes_completed} of ${rollout.changes_total} settings written.`;
-    case "verifying": return `Reading Square back · ${rollout.locations_verified} of ${rollout.locations_total} locations checked.`;
-    case "converged": return `${rollout.converged_count} of ${rollout.locations_total} affected locations verified against the approved plan.`;
-    case "partial": return `${rollout.converged_count} of ${rollout.locations_total} locations match; ${rollout.non_converged_count} do not. Review Differences before retrying.`;
-    case "outcome_uncertain": return "The update was interrupted and Square may or may not have applied it. Check Differences before doing anything else.";
-    case "failed": return "The rollout stopped before Square could be verified.";
+    case "queued": return "Waiting to start sending to Square.";
+    case "applying": return `Sending to Square. ${rollout.changes_completed} of ${rollout.changes_total} settings sent.`;
+    case "verifying": return `Checking Square. ${rollout.locations_verified} of ${rollout.locations_total} locations checked.`;
+    case "converged": return `${rollout.converged_count} of ${rollout.locations_total} locations checked and correct.`;
+    case "partial": return `${rollout.converged_count} of ${rollout.locations_total} locations are correct and ${rollout.non_converged_count} are not. Look at Differences before trying again.`;
+    case "outcome_uncertain": return "The update was interrupted, so Square may or may not have it. Look at Differences before doing anything else.";
+    case "failed": return "The update stopped before Mise could check Square.";
   }
 }
 
@@ -257,7 +257,7 @@ export interface Difference {
 }
 
 /**
- * One difference per resource property — not per location. Square's catalog is
+ * One difference per resource property, not per location. Square's catalog is
  * account-wide, so a tax at four locations is one object and one decision.
  * Conformance changes are plan-shaped (old = live Square, new = approved).
  */

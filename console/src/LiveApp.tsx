@@ -131,7 +131,7 @@ export default function LiveApp() {
       if (options.conformance) void checkConformance();
     } catch (error) {
       setConnected(false);
-      setNotice({ tone: "critical", text: `Can't reach the Mise API: ${errorMessage(error)}` });
+      setNotice({ tone: "critical", text: `Mise can't be reached right now. ${errorMessage(error)}` });
     } finally {
       setLoading(false);
     }
@@ -152,7 +152,7 @@ export default function LiveApp() {
     return subscribeToRolloutEvents(
       client.eventsUrl(rolloutId),
       () => void refreshRollout(rolloutId),
-      () => setNotice({ tone: "attention", text: "Live rollout updates are reconnecting. The saved rollout record remains authoritative." }),
+      () => setNotice({ tone: "attention", text: "Live progress is reconnecting. The saved progress is still correct." }),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rollout?.rollout_id, rollout?.status]);
@@ -165,7 +165,7 @@ export default function LiveApp() {
         await refreshLive({ conformance: true });
       }
     } catch (error) {
-      setNotice({ tone: "critical", text: `Couldn't read rollout state: ${errorMessage(error)}` });
+      setNotice({ tone: "critical", text: `Couldn't load the update progress. ${errorMessage(error)}` });
     }
   }
 
@@ -182,7 +182,7 @@ export default function LiveApp() {
     setTurns((current) => [
       ...current,
       { id: crypto.randomUUID(), role: "operator", kind: "message", text, at: now },
-      { id: pendingId, role: "mise", kind: "pending", text: "Interpreting the request and reading the governed estate", at: now },
+      { id: pendingId, role: "mise", kind: "pending", text: "Reading your request and checking Square", at: now },
     ]);
     setAgentBusy(true);
     const replacePending = (turn: Omit<Turn, "id" | "at">) =>
@@ -211,7 +211,7 @@ export default function LiveApp() {
       replacePending({
         role: "mise",
         kind: "failure",
-        text: `I could not prepare that governed plan: ${message}. Nothing was approved or applied.`,
+        text: `I couldn't prepare a plan for that. ${message}. Nothing was approved or changed.`,
       });
     } finally {
       setAgentBusy(false);
@@ -243,8 +243,8 @@ export default function LiveApp() {
         setNotice({
           tone: "positive",
           text: isPolicyOnly(activePlan)
-            ? "Approved. This is now the approved setup. Square already matched, so no update is required."
-            : "Approved. This is now the approved setup. Square has not been changed yet; start the rollout when ready.",
+            ? "Approved. This is now your approved setup. Square already had these values, so nothing needs to be sent."
+            : "Approved. This is now your approved setup. Square has not changed yet. Send it to Square when you are ready.",
         });
         await refreshLive({ conformance: true });
       } else if (action.kind === "apply") {
@@ -259,7 +259,7 @@ export default function LiveApp() {
     } catch (error) {
       if (error instanceof ConsoleApiError && (error.status === 401 || error.status === 403)) {
         setAccessCode("");
-        setNotice({ tone: "critical", text: "The operator code was not accepted. Nothing was approved or written." });
+        setNotice({ tone: "critical", text: "That operator code didn't work. Nothing was approved or changed." });
       } else {
         setNotice({ tone: "critical", text: errorMessage(error) });
       }
@@ -305,7 +305,7 @@ export default function LiveApp() {
   }
 
   const nav: Array<{ key: ConsolePage; label: string; icon: IconName; count?: string; tone?: "attention" | "ok" }> = [
-    { key: "overview", label: "Overview", icon: "overview" },
+    { key: "overview", label: "Home", icon: "overview" },
     { key: "changes", label: "Changes", icon: "changes", count: phase === "review" ? "1" : undefined, tone: phase === "review" ? "attention" : undefined },
     {
       key: "drift",
@@ -321,10 +321,10 @@ export default function LiveApp() {
     <>
       <div className="env-strip" role="note">
         <span>{orgName || "Mise"}</span>
-        <span className="mid"><Icon name="flask" size={14} /><b>Square Sandbox</b><span className="extra"> · test locations, not a live restaurant</span></span>
+        <span className="mid"><Icon name="flask" size={14} /><b>Square Sandbox</b><span className="extra"> (test locations, not real restaurants)</span></span>
         <span className="right">
           <span className={`dot ${loading ? "" : connected ? "on" : "off"}`} aria-hidden />
-          {loading ? "Connecting…" : connected ? "Live AWS data" : "Disconnected"}
+          {loading ? "Connecting..." : connected ? "Live data" : "Disconnected"}
         </span>
       </div>
       <div className="shell">
@@ -345,7 +345,7 @@ export default function LiveApp() {
           <div className="side-foot">
             <div className="conn" role="status">
               <span className={`dot ${loading ? "" : connected ? "on" : "off"}`} aria-hidden />
-              <span><strong>{loading ? "Connecting…" : connected ? "Connected" : "Disconnected"}</strong><br />No stand-in data is ever shown</span>
+              <span><strong>{loading ? "Connecting..." : connected ? "Connected" : "Disconnected"}</strong><br />Live data only, never samples</span>
             </div>
           </div>
         </aside>
@@ -367,7 +367,7 @@ export default function LiveApp() {
                 role="switch"
                 aria-checked={Boolean(accessCode)}
                 onClick={() => setDialog({ kind: "unlock" })}
-                title={accessCode ? "Operator code set for this tab" : "Enter operator code to approve or roll out"}
+                title={accessCode ? "Updates are turned on for this tab" : "Turn on updates to approve plans or send them to Square"}
               >
                 Updates <span className="track" aria-hidden />
               </button>
@@ -424,6 +424,7 @@ export default function LiveApp() {
               onApply={() => setDialog({ kind: "apply" })}
               onRetry={() => setDialog({ kind: "retry" })}
               onOpenDifferences={() => { go("drift"); void checkConformance(); }}
+              onHome={() => go("overview")}
             />
           )}
           {page === "drift" && (
@@ -434,10 +435,11 @@ export default function LiveApp() {
               onCheck={() => void checkConformance()}
               onLoadAudit={() => void loadAudit()}
               onDecide={decide}
+              onHome={() => go("overview")}
             />
           )}
           {page === "locations" && !locationId && (
-            <LocationsPage estate={estate} conformance={conformance} verified={verified} onOpenLocation={openLocation} />
+            <LocationsPage estate={estate} conformance={conformance} verified={verified} onOpenLocation={openLocation} onHome={() => go("overview")} />
           )}
           {page === "locations" && locationId && (
             <LocationDetailPage
@@ -476,7 +478,7 @@ export default function LiveApp() {
 }
 
 // ---------------------------------------------------------------------------
-// Search — Stripe's top search, over real loaded records only
+// Search: Stripe's top search, over real loaded records only
 
 function SearchBox(props: {
   estate: EstateResponse;
@@ -582,18 +584,18 @@ function UnlockDialog({ accessCode, onSave, onClose }: { accessCode: string; onS
   const [code, setCode] = useState(accessCode);
   return (
     <Dialog
-      title={accessCode ? "Updates enabled" : "Enable updates"}
+      title={accessCode ? "Updates are on" : "Turn on updates"}
       onClose={onClose}
       footer={
         <>
-          {accessCode && <button className="btn" onClick={() => onSave("")}>Lock again</button>}
+          {accessCode && <button className="btn" onClick={() => onSave("")}>Turn off</button>}
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" onClick={() => onSave(code.trim())} disabled={!code.trim()}>Enable updates</button>
+          <button className="btn primary" onClick={() => onSave(code.trim())} disabled={!code.trim()}>Turn on updates</button>
         </>
       }
     >
-      <p>Reading is public. Approving a plan, starting a rollout and retrying are protected and need the private operator code.</p>
-      <p className="muted">The code stays in this browser tab and is attached only to those protected requests. The agent never receives it.</p>
+      <p>Anyone can look around. To approve a plan or send it to Square, enter the operator code.</p>
+      <p className="muted">The code is kept in this browser tab only. It is used for approving and sending, and is never shared with the assistant.</p>
       <form onSubmit={(event) => { event.preventDefault(); if (code.trim()) onSave(code.trim()); }}>
         <label className="field">
           <span>Operator code</span>
@@ -623,18 +625,18 @@ function ConfirmDialog(props: {
       heading: "Approve this plan?",
       button: "Approve plan",
       body: policyOnly
-        ? `“${title}” becomes the approved setup in a new revision. Square already matches, so no POS update will be needed.`
-        : `“${title}” becomes the approved setup in a new revision. Approval does not change Square; that happens only when you start the rollout.`,
+        ? `“${title}” will become your approved setup. Square already has these values, so nothing will be sent.`
+        : `“${title}” will become your approved setup. Approving does not change Square. You send it to Square as a separate step.`,
     },
     apply: {
-      heading: "Start rollout to Square?",
-      button: "Start rollout",
-      body: `Mise will send exactly the approved plan to Square Sandbox (${writes.create} create, ${writes.update} update, ${writes.remove} delete${props.targets !== null ? ` across ${props.targets} of ${props.locationCount} locations` : ""}), then read Square back to verify.`,
+      heading: "Send this plan to Square?",
+      button: "Send to Square",
+      body: `Mise will send exactly what was approved: ${writes.create} new, ${writes.update} changed and ${writes.remove} removed settings${props.targets !== null ? `, at ${props.targets} of ${props.locationCount} locations` : ""}. Then it reads Square back to confirm.`,
     },
     retry: {
-      heading: "Retry this rollout?",
-      button: "Retry rollout",
-      body: "Mise will re-send the same approved plan and verify again. Check Differences first so you know what Square currently holds.",
+      heading: "Try sending again?",
+      button: "Try again",
+      body: "Mise will send the same approved plan again and check the result. It helps to look at Differences first so you know what Square has now.",
     },
   }[props.action.kind];
 
@@ -645,15 +647,15 @@ function ConfirmDialog(props: {
       footer={
         <>
           <button className="btn" onClick={props.onClose} disabled={props.busy}>Cancel</button>
-          <button className={`btn ${props.action.kind === "approve" ? "primary" : "ink"}`} onClick={() => props.onConfirm(code.trim())} disabled={props.busy || !code.trim()}>
-            {props.busy ? "Working…" : copy.button}
+          <button className={`btn ${props.action.kind === "approve" ? "primary" : "dark"}`} onClick={() => props.onConfirm(code.trim())} disabled={props.busy || !code.trim()}>
+            {props.busy ? "Working..." : copy.button}
           </button>
         </>
       }
     >
       <p>{copy.body}</p>
       <p className="muted" style={{ fontSize: 12 }}>
-        Fingerprint <span className="mono">sha256:{props.plan.plan_hash.slice(0, 12)}…{props.plan.plan_hash.slice(-10)}</span>
+        Approval code <span className="mono">{props.plan.plan_hash.slice(0, 12)}...{props.plan.plan_hash.slice(-10)}</span>
       </p>
       {!props.accessCode && (
         <label className="field">
@@ -697,7 +699,7 @@ function readableAgentResponse(value: unknown): string {
   for (const key of ["message", "text", "interpretation", "clarification_question"]) {
     if (typeof record[key] === "string") return String(record[key]);
   }
-  return "Mise returned a structured response. Review the plan for details.";
+  return "Mise replied. See the plan on the right for details.";
 }
 
 function errorMessage(error: unknown): string {
@@ -712,5 +714,5 @@ function friendlyOrgName(value: string): string {
 }
 
 function pageTitle(page: ConsolePage): string {
-  return ({ overview: "Overview", changes: "Changes", drift: "Differences", locations: "Locations" })[page];
+  return ({ overview: "Home", changes: "Changes", drift: "Differences", locations: "Locations" })[page];
 }

@@ -2,7 +2,7 @@ import { ReactNode, useEffect, useId, useRef, useState } from "react";
 import { lifecycleSteps, type LifecycleState, type Tone } from "./model.js";
 
 // ---------------------------------------------------------------------------
-// Icons — 16px stroke icons, inline so the console makes no asset requests.
+// Icons: 16px stroke icons, inline so the console makes no asset requests.
 
 const paths = {
   overview: "M2.5 2.5h4.5v4.5H2.5zM9 2.5h4.5v4.5H9zM2.5 9h4.5v4.5H2.5zM9 9h4.5v4.5H9z",
@@ -32,6 +32,10 @@ const paths = {
   flask: "M6 2h4M6.5 2v4L3 13.5h10L9.5 6V2",
   rollout: "M2.5 8h8M8 4.5L11.5 8 8 11.5M13.5 3v10",
   filter: "M8 3v10M3 8h10",
+  chevronDown: "M3.5 6L8 10.5 12.5 6",
+  send: "M14 2L7 9M14 2l-4.5 12-2.5-5-5-2.5z",
+  lightbulb: "M6 13.5h4M6.5 11.5h3M8 1.5a4.5 4.5 0 0 0-2.5 8.2V11h5V9.7A4.5 4.5 0 0 0 8 1.5z",
+  pin: "M8 14s4.5-4.2 4.5-7.5a4.5 4.5 0 1 0-9 0C3.5 9.8 8 14 8 14z",
 } as const;
 
 export type IconName = keyof typeof paths;
@@ -100,14 +104,92 @@ export function CopyField({ value, display, label }: { value: string; display?: 
   );
 }
 
-export function Tabs<T extends string>({ tabs, value, onChange, label }: { tabs: Array<{ key: T; label: string }>; value: T; onChange: (key: T) => void; label: string }) {
+export function Tabs<T extends string>({ tabs, value, onChange, label, big }: { tabs: Array<{ key: T; label: string; count?: number | string }>; value: T; onChange: (key: T) => void; label: string; big?: boolean }) {
   return (
-    <div className="tabs" role="tablist" aria-label={label}>
+    <div className={`tabs ${big ? "big" : ""}`} role="tablist" aria-label={label}>
       {tabs.map((tab) => (
         <button key={tab.key} type="button" role="tab" aria-selected={tab.key === value} onClick={() => onChange(tab.key)}>
           {tab.label}
+          {tab.count !== undefined && <span className="count">{tab.count}</span>}
         </button>
       ))}
+    </div>
+  );
+}
+
+export function Breadcrumbs({ items }: { items: Array<{ label: string; onClick?: () => void }> }) {
+  return (
+    <nav className="crumbs" aria-label="Breadcrumb">
+      {items.map((item, index) => {
+        const last = index === items.length - 1;
+        return (
+          <span key={`${item.label}-${index}`} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            {last || !item.onClick ? (
+              <span aria-current={last ? "page" : undefined}>{item.label}</span>
+            ) : (
+              <button type="button" onClick={item.onClick}>{item.label}</button>
+            )}
+            {!last && <Icon name="chevron" size={14} />}
+          </span>
+        );
+      })}
+    </nav>
+  );
+}
+
+export function RadioCards<T extends string>({ options, value, onChange, label }: { options: Array<{ key: T; title: ReactNode; description: ReactNode }>; value: T | null; onChange: (key: T) => void; label: string }) {
+  return (
+    <div className="radio-cards" role="radiogroup" aria-label={label}>
+      {options.map((option) => (
+        <button
+          key={option.key}
+          type="button"
+          role="radio"
+          aria-checked={option.key === value}
+          className="radio-card"
+          onClick={() => onChange(option.key)}
+        >
+          <span className="dotbox" aria-hidden />
+          <span>
+            <strong>{option.title}</strong>
+            <span className="desc">{option.description}</span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function AccordionItem({
+  icon,
+  title,
+  subtitle,
+  aside,
+  open,
+  onToggle,
+  children,
+}: {
+  icon: IconName;
+  title: ReactNode;
+  subtitle?: ReactNode;
+  aside?: ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const bodyId = useId();
+  return (
+    <div className={`acc ${open ? "open" : ""}`}>
+      <button type="button" className="acc-head" aria-expanded={open} aria-controls={bodyId} onClick={onToggle}>
+        <Icon name={icon} />
+        <span>
+          <span className="t">{title}</span>
+          {subtitle && <span className="s">{subtitle}</span>}
+        </span>
+        <span>{aside}</span>
+        <span className="chev"><Icon name="chevronDown" size={18} /></span>
+      </button>
+      {open && <div className="acc-body" id={bodyId}>{children}</div>}
     </div>
   );
 }
