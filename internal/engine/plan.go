@@ -302,6 +302,7 @@ func planFor(
 	}
 
 	change.ProviderID = providerID
+	change.ProviderVersion = entry.resource.Version
 
 	liveProperties := normalizeLiveProperties(entry.resource.Properties)
 	diffs := diffProperties(liveProperties, d.Properties)
