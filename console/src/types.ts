@@ -9,6 +9,9 @@ export interface SnapshotRecord {
 
 export interface RevisionRecord {
   revision_id: string;
+  plan_id?: string;
+  plan_hash?: string;
+  title?: string;
   revision_number: number;
   display_name: string;
   created_at: string;
@@ -27,6 +30,20 @@ export interface PlanRecord {
   approved_at?: string | null;
   approved_by?: string | null;
   applied_at?: string | null;
+  revision_id?: string | null;
+  /** Present on GET /plans/:id: changes parsed from the hash-verified artifact. */
+  artifact_verified?: boolean;
+  changes?: PlanChange[];
+  target_location_ids?: string[];
+}
+
+export interface PlanChange {
+  action: "create" | "update" | "delete";
+  resource_type: string;
+  resource_name: string;
+  provider_id: string;
+  location_ids: string[];
+  diffs: Array<{ path: string; old_value: unknown; new_value: unknown }>;
 }
 
 export type RolloutStatus =
@@ -160,4 +177,22 @@ export interface RolloutEventPayload {
   sequence: number;
   type: string;
   data: Record<string, unknown>;
+}
+
+/** GET /conformance: approved desired state vs live Square, as plan changes (live -> desired). */
+export interface ConformanceResponse {
+  status: "ok";
+  organization_id: string;
+  conformance: {
+    changes: Array<{
+      action: number;
+      resource_type: string;
+      resource_name: string;
+      provider_id?: string;
+      location_ids?: string[];
+      diffs?: Array<{ path: string; old_value?: unknown; new_value?: unknown }>;
+    }>;
+    summary: { to_create: number; to_update: number; to_delete: number };
+    checked: number;
+  };
 }

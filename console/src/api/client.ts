@@ -1,35 +1,10 @@
-import type { EstateResponse, HistoryResponse, LiveDriftResponse, PlanRecord, RolloutRecord } from "../types.js";
+import type { ConformanceResponse, EstateResponse, HistoryResponse, LiveDriftResponse, PlanRecord, RolloutRecord } from "../types.js";
 
 export class ConsoleApiError extends Error {
   constructor(public readonly status: number, message: string) {
     super(message);
     this.name = "ConsoleApiError";
   }
-}
-
-interface ConformanceDiff {
-  path: string;
-  old_value?: unknown;
-  new_value?: unknown;
-}
-
-interface ConformanceChange {
-  action: number;
-  resource_type: string;
-  resource_name: string;
-  provider_id?: string;
-  location_ids?: string[];
-  diffs?: ConformanceDiff[];
-}
-
-interface ConformanceResponse {
-  status: "ok";
-  organization_id: string;
-  conformance: {
-    changes: ConformanceChange[];
-    summary: { to_create: number; to_update: number; to_delete: number };
-    checked: number;
-  };
 }
 
 export class MiseConsoleClient {
@@ -57,6 +32,11 @@ export class MiseConsoleClient {
   async drift(): Promise<LiveDriftResponse> {
     const response = await this.request<ConformanceResponse>("/conformance");
     return conformanceAsDifferences(response);
+  }
+
+  /** Approved desired state vs Square now, unmapped. */
+  conformance(): Promise<ConformanceResponse> {
+    return this.request<ConformanceResponse>("/conformance");
   }
 
   /** Historical audit: live Square versus Mise's last checkpointed state. */
