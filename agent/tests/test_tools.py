@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from mise_agent.tools import find_configuration_resource
+from mise_agent.tools import ToolContext, find_configuration_resource, resolve_location_query
 
 
 def workspace(tmp_path: Path) -> Path:
@@ -24,6 +24,37 @@ def workspace(tmp_path: Path) -> Path:
                             "percentage": "3.25",
                         },
                     }
+                ]
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return root
+
+
+def geographic_workspace(tmp_path: Path) -> Path:
+    root = tmp_path / "geo-workspace"
+    root.mkdir()
+    (root / "mise.yaml").write_text("version: '1'\n", encoding="utf-8")
+    (root / "locations.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "locations": [
+                    {
+                        "id": "ATL",
+                        "name": "Mise Test - Atlanta",
+                        "state": "GA",
+                        "city": "Atlanta",
+                        "address": "191 Peachtree St NE, Atlanta, GA",
+                    },
+                    {
+                        "id": "SAV",
+                        "name": "Mise Test - Savannah",
+                        "state": "GA",
+                        "city": "Savannah",
+                        "address": "33 E Bay St, Savannah, GA",
+                    },
                 ]
             },
             sort_keys=False,
@@ -66,3 +97,29 @@ def test_find_configuration_resource_returns_none_for_unknown_resource(tmp_path:
     )
 
     assert result == {"resource": None}
+
+
+def test_resolve_location_query_accepts_city_geography(tmp_path: Path) -> None:
+    context = ToolContext(geographic_workspace(tmp_path), runner=None)  # type: ignore[arg-type]
+
+    result = resolve_location_query(context, cities=["Savannah"])
+
+    assert result["location_ids"] == ["SAV"]
+    assert result["count"] == 1
+    assert result["locations"] == [
+        {
+            "id": "SAV",
+            "name": "Mise Test - Savannah",
+            "state": "GA",
+            "city": "Savannah",
+        }
+    ]
+
+
+def test_resolve_location_query_combines_state_and_city(tmp_path: Path) -> None:
+    context = ToolContext(geographic_workspace(tmp_path), runner=None)  # type: ignore[arg-type]
+
+    result = resolve_location_query(context, states=["GA"], cities=["Atlanta"])
+
+    assert result["location_ids"] == ["ATL"]
+    assert result["locations"][0]["name"] == "Mise Test - Atlanta"
