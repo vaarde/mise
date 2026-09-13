@@ -23,6 +23,7 @@ export function subscribeToRolloutEvents(
     "rollout_failed",
   ]);
 
+  let terminalReceived = false;
   const listeners = new Map<string, EventListener>();
   for (const type of eventTypes) {
     const listener: EventListener = (raw) => {
@@ -34,18 +35,23 @@ export function subscribeToRolloutEvents(
         data = { raw: message.data };
       }
       onEvent({ sequence: Number(message.lastEventId || 0), type, data });
-      // API Gateway closes the finite replay stream after persisted events are
-      // sent. Once a terminal rollout event has arrived, closing explicitly
-      // prevents EventSource from treating that normal EOF as a reconnecting
-      // network error in the operator console.
-      if (terminalEventTypes.has(type)) source.close();
+      // API Gateway returns a finite replay stream. Once a terminal event is
+      // observed, the normal EOF is not a connectivity failure and must not
+      // surface a misleading "reconnecting" banner in the console.
+      if (terminalEventTypes.has(type)) {
+        terminalReceived = true;
+        source.close();
+      }
     };
     listeners.set(type, listener);
     source.addEventListener(type, listener);
   }
-  source.onerror = (event) => onError?.(event);
+  source.onerror = (event) => {
+    if (!terminalReceived) onError?.(event);
+  };
 
   return () => {
+    terminalReceived = true;
     for (const [type, listener] of listeners) source.removeEventListener(type, listener);
     source.close();
   };
