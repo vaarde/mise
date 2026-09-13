@@ -388,6 +388,7 @@ function actionWord(action: "create" | "update" | "delete"): string {
 }
 
 function progressSummary(phase: PlanPhase, rollout: RolloutRecord | null, revision?: RevisionRecord): string {
+  if (phase === "failed" && requiresFreshPlan(rollout)) return "This plan is stale. Prepare a fresh plan before sending again.";
   switch (phase) {
     case "review": return "Waiting for someone to approve";
     case "ready_to_roll_out": return `Approved as version ${revision?.revision_number ?? ""}. Not sent to Square yet.`;
@@ -437,7 +438,9 @@ function Progress({ plan, phase, rollout, revision }: { plan: PlanRecord; phase:
       state: s === "verifying" ? "now" : s === "converged" ? "done" : s === "partial" ? "warn" : s === "failed" || s === "outcome_uncertain" ? "bad" : "",
       title: s === "converged" ? "Checked and correct" : s === "partial" ? "Partly correct" : s === "outcome_uncertain" ? "Result unclear" : "Check Square",
       sub: `${rollout.locations_verified} of ${rollout.locations_total} locations checked`,
-      sub2: ["converged", "partial", "failed", "outcome_uncertain"].includes(s) ? `${rolloutSentence(rollout)} ${formatTime(rollout.updated_at)}` : undefined,
+      sub2: requiresFreshPlan(rollout)
+        ? `This approved plan is stale because the workspace changed after it was prepared. Prepare a fresh plan from Differences. ${formatTime(rollout.updated_at)}`
+        : ["converged", "partial", "failed", "outcome_uncertain"].includes(s) ? `${rolloutSentence(rollout)} ${formatTime(rollout.updated_at)}` : undefined,
       meter: s === "verifying" ? pct(rollout.locations_verified, rollout.locations_total) : undefined,
     });
   } else {
@@ -461,10 +464,15 @@ function Progress({ plan, phase, rollout, revision }: { plan: PlanRecord; phase:
   );
 }
 
+function requiresFreshPlan(rollout: RolloutRecord | null | undefined): boolean {
+  return Boolean(rollout?.failures?.some((failure) => failure.code === "stale_plan"));
+}
+
 function Footer(props: Props & { plan: PlanRecord; phase: PlanPhase; revision?: RevisionRecord }) {
   const { phase, unlocked, actionBusy } = props;
   const lock = <span className="note"><Icon name={unlocked ? "unlock" : "lock"} size={14} />{unlocked ? "Updates are turned on" : "You will need the operator code"}</span>;
   const version = props.revision ? `version ${props.revision.revision_number}` : "a new version";
+  const freshPlanRequired = requiresFreshPlan(props.rollout);
   let content: ReactNode;
   switch (phase) {
     case "review":
@@ -487,7 +495,9 @@ function Footer(props: Props & { plan: PlanRecord; phase: PlanPhase; revision?: 
       break;
     case "partial":
     case "failed":
-      content = <><span className="note">Trying again sends the same approved plan.</span><div className="btn-row"><button className="btn" onClick={props.onOpenDifferences}>Check differences</button><button className="btn dark" onClick={props.onRetry} disabled={actionBusy}>{actionBusy ? <><Spinner />Starting</> : "Try again"}</button></div></>;
+      content = freshPlanRequired
+        ? <><span className="note"><Icon name="alert" size={14} />This reviewed plan is stale and cannot be safely retried.</span><button className="btn primary" onClick={props.onOpenDifferences}>Prepare a fresh plan</button></>
+        : <><span className="note">Trying again sends the same approved plan.</span><div className="btn-row"><button className="btn" onClick={props.onOpenDifferences}>Check differences</button><button className="btn dark" onClick={props.onRetry} disabled={actionBusy}>{actionBusy ? <><Spinner />Starting</> : "Try again"}</button></div></>;
       break;
     case "uncertain":
       content = <><span className="note"><Icon name="alert" size={14} />Check what Square has before doing anything else.</span><button className="btn primary" onClick={props.onOpenDifferences}>Check differences</button></>;
