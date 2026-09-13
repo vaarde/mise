@@ -233,11 +233,8 @@ func comparePlan(
 	scoped []provider.Location,
 	scopeFilter []string,
 ) *PlanResult {
-	// Keep empty collections non-nil so the machine-readable plan contract is
-	// stable: a no-op plan must serialize as `"changes": []`, never null. The
-	// Python/AgentCore boundary deliberately validates this strict shape.
 	result := &PlanResult{
-		Plan: Plan{Changes: make([]ResourceChange, 0)},
+		Plan:      Plan{Changes: make([]ResourceChange, 0)},
 		Locations: scoped,
 	}
 
@@ -268,122 +265,218 @@ func planFor(
 	st *state.State,
 	scopeFilter []string,
 ) ResourceChange {
-	// A resource tracked in state must be matched by provider ID, never by
-	// display name. This avoids accidentally adopting a manually-created POS
-	// object with the same name after the managed object was deleted.
-	var providerID string
-	if st != nil {
-		if entry, ok := st.Resources[d.FullName()]; ok {
-			providerID = entry.ProviderID
-		}
-	}
-
-	var current *aggregate
-	if providerID != "" {
-		for _, candidate := range live {
-			if candidate.ProviderID == providerID {
-				current = candidate
-				break
-			}
-		}
-	} else {
-		for key, candidate := range live {
-			if key.ResourceType == d.Type && key.ResourceName == d.Name {
-				current = candidate
-				break
-			}
-		}
-	}
-
-	if current == nil {
-		return ResourceChange{
-			Action:       ActionCreate,
-			ResourceType: d.Type,
-			ResourceName: d.Name,
-			LocationIDs:  restrictTo(d.LocationIDs, scopeFilter),
-			Diffs:        createDiffs(d.Properties),
-			Desired:      d.Properties,
-		}
-	}
-
 	desiredLocations := restrictTo(d.LocationIDs, scopeFilter)
-	currentLocations := restrictTo(current.LocationIDs, scopeFilter)
-	diffs := propertyDiffs(d.Properties, current.Properties)
-	if !sameStrings(desiredLocations, currentLocations) {
-		diffs = append(diffs, PropertyDiff{
-			Path:     LocationsProperty,
-			OldValue: currentLocations,
-			NewValue: desiredLocations,
-		})
+
+	change := ResourceChange{
+		ResourceType: d.Type,
+		ResourceName: d.Name,
+		LocationIDs:  desiredLocations,
+		Desired:      d.Properties,
+	}
+
+	// A resource that does not apply anywhere in the plan's scope is
+	// simply out of scope, not a change.
+	if scopeFilter != nil && len(desiredLocations) == 0 {
+		change.Action = ActionNoop
+		return change
+	}
+
+	providerID, known := stateLookup(st)(d.FullName())
+	if !known {
+		// Nothing in state means Mise has never applied this resource, so
+		// it is a create. This matches Terraform: state is the record of
+		// what Mise manages, and an unmanaged resource gets created.
+		change.Action = ActionCreate
+		change.Diffs = createDiffs(d.Properties)
+		return change
+	}
+
+	entry, ok := live[resourceKey{resourceType: d.Type, providerID: providerID}]
+	if !ok {
+		// State knows an ID but the POS no longer has it — someone deleted
+		// it outside Mise. Recreate it.
+		change.Action = ActionCreate
+		change.ProviderID = ""
+		change.Diffs = createDiffs(d.Properties)
+		return change
+	}
+
+	change.ProviderID = providerID
+
+	liveProperties := normalizeLiveProperties(entry.resource.Properties)
+	diffs := diffProperties(liveProperties, d.Properties)
+
+	liveLocations := restrictTo(sortedKeysOf(entry.locations), scopeFilter)
+	if locationDiff, changed := diffLocations(liveLocations, desiredLocations); changed {
+		diffs = append(diffs, locationDiff)
 	}
 
 	if len(diffs) == 0 {
-		return ResourceChange{
-			Action:       ActionNoop,
-			ResourceType: d.Type,
-			ResourceName: d.Name,
-			ProviderID:   current.ProviderID,
-			LocationIDs:  desiredLocations,
-			Desired:      d.Properties,
-		}
+		change.Action = ActionNoop
+		return change
 	}
 
-	return ResourceChange{
-		Action:       ActionUpdate,
-		ResourceType: d.Type,
-		ResourceName: d.Name,
-		ProviderID:   current.ProviderID,
-		LocationIDs:  desiredLocations,
-		Diffs:        diffs,
-		Desired:      d.Properties,
-	}
+	change.Action = ActionUpdate
+	change.Diffs = diffs
+	return change
 }
 
+// createDiffs renders every property of a new resource as an addition.
 func createDiffs(properties map[string]interface{}) []PropertyDiff {
-	keys := make([]string, 0, len(properties))
-	for key := range properties {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	diffs := make([]PropertyDiff, 0, len(keys))
-	for _, key := range keys {
+	diffs := make([]PropertyDiff, 0, len(properties))
+	for _, key := range sortedPropertyKeys(properties) {
 		diffs = append(diffs, PropertyDiff{Path: key, NewValue: properties[key]})
 	}
 	return diffs
 }
 
-func propertyDiffs(desired, current map[string]interface{}) []PropertyDiff {
-	keys := make([]string, 0, len(desired))
-	for key := range desired {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+// diffProperties compares live against desired, per top-level property.
+//
+// Properties present on the POS but absent from the config are ignored:
+// Mise manages what the config declares and leaves the rest alone, which
+// is the same safety-first stance that keeps it from deleting resources.
+func diffProperties(live, desired map[string]interface{}) []PropertyDiff {
+	var diffs []PropertyDiff
 
-	diffs := make([]PropertyDiff, 0)
-	for _, key := range keys {
-		want := desired[key]
-		have, ok := current[key]
-		if !ok || !reflect.DeepEqual(normalizeJSONNumber(want), normalizeJSONNumber(have)) {
-			diffs = append(diffs, PropertyDiff{Path: key, OldValue: have, NewValue: want})
+	for _, key := range sortedPropertyKeys(desired) {
+		want := canonical(desired[key])
+		got, present := live[key]
+
+		if !present {
+			diffs = append(diffs, PropertyDiff{Path: key, NewValue: desired[key]})
+			continue
+		}
+
+		if !reflect.DeepEqual(canonical(got), want) {
+			diffs = append(diffs, PropertyDiff{Path: key, OldValue: got, NewValue: desired[key]})
 		}
 	}
+
 	return diffs
 }
 
-func normalizeJSONNumber(value interface{}) interface{} {
-	if number, ok := value.(json.Number); ok {
-		return number.String()
+// diffLocations reports a change in the set of locations a resource
+// applies at.
+func diffLocations(live, desired []string) (PropertyDiff, bool) {
+	if reflect.DeepEqual(live, desired) {
+		return PropertyDiff{}, false
 	}
-	return value
+	return PropertyDiff{Path: LocationsProperty, OldValue: live, NewValue: desired}, true
 }
 
-func sameStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
+// normalizeLiveProperties converts provider.Ref values into the provider
+// IDs that the desired side has already been resolved to, so the two are
+// comparable.
+func normalizeLiveProperties(properties map[string]interface{}) map[string]interface{} {
+	normalized, _ := normalizeRefs(properties).(map[string]interface{})
+	if normalized == nil {
+		return map[string]interface{}{}
 	}
-	left := append([]string(nil), a...)
-	right := append([]string(nil), b...)
-	sort.Strings(left)
-	sort.Strings(right)
-	return strings.Join(left, "\x00") == strings.Join(right, "\x00")
+	return normalized
+}
+
+func normalizeRefs(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case provider.Ref:
+		return typed.ProviderID
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, val := range typed {
+			out[key] = normalizeRefs(val)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, 0, len(typed))
+		for _, val := range typed {
+			out = append(out, normalizeRefs(val))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+// canonical puts a value into a shape that compares reliably.
+//
+// The two sides arrive from different decoders: config values come from
+// YAML (an int), live values from JSON (an int64 or float64). Round-tripping
+// both through JSON makes 450, int64(450) and 450.0 the same value, so a
+// price that has not changed does not read as a change.
+func canonical(value interface{}) interface{} {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+
+	var out interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return value
+	}
+	return out
+}
+
+// filterLocations narrows to a single location by ID or name.
+func filterLocations(locations []provider.Location, target string) ([]provider.Location, error) {
+	if target == "" {
+		return locations, nil
+	}
+
+	for _, l := range locations {
+		if l.ID == target || strings.EqualFold(l.Name, target) {
+			return []provider.Location{l}, nil
+		}
+	}
+
+	names := make([]string, 0, len(locations))
+	for _, l := range locations {
+		names = append(names, fmt.Sprintf("%s (%s)", l.Name, l.ID))
+	}
+	return nil, fmt.Errorf("unknown location %q — known locations: %s", target, strings.Join(names, ", "))
+}
+
+// filterTargets narrows to a single resource by "type.name" or "name".
+func filterTargets(desired []*DesiredResource, target string) ([]*DesiredResource, error) {
+	if target == "" {
+		return desired, nil
+	}
+
+	var matched []*DesiredResource
+	for _, d := range desired {
+		if d.FullName() == target || d.Name == target {
+			matched = append(matched, d)
+		}
+	}
+
+	if len(matched) == 0 {
+		return nil, fmt.Errorf("no declared resource matches target %q", target)
+	}
+	if len(matched) > 1 {
+		names := make([]string, 0, len(matched))
+		for _, d := range matched {
+			names = append(names, d.FullName())
+		}
+		return nil, fmt.Errorf("target %q is ambiguous — matches %s", target, strings.Join(names, ", "))
+	}
+
+	return matched, nil
+}
+
+// sortedPropertyKeys returns a property map's keys in sorted order.
+func sortedPropertyKeys(properties map[string]interface{}) []string {
+	keys := make([]string, 0, len(properties))
+	for key := range properties {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// sortedKeysOf returns a set's members in sorted order.
+func sortedKeysOf(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
