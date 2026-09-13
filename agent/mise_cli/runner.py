@@ -7,7 +7,7 @@ from typing import Iterable
 
 from pydantic import ValidationError
 
-from .contracts import ApplyResult, DriftResult, PlanDocument, SavedPlanDocument, VerifyEvent
+from .contracts import ApplyFailure, ApplyResult, DriftResult, PlanDocument, SavedPlanDocument, VerifyEvent
 from .errors import MiseCommandError, MiseProtocolError, MiseTimeout
 
 
@@ -16,7 +16,7 @@ class MiseRunner:
 
     ``executable_args`` are a fixed, trusted prefix inserted immediately
     after the executable. Production leaves this empty and executes the
-    compiled Mise binary directly. Tests use it to run a fake Mise Python
+    compiled Go binary directly. Tests use it to run a fake Mise Python
     script through the current interpreter on every operating system.
 
     Per-call command arguments remain allow-listed by the public methods;
@@ -74,8 +74,37 @@ class MiseRunner:
         )
         try:
             result = ApplyResult.model_validate_json(completed.stdout)
-        except (ValidationError, ValueError) as exc:
-            raise MiseCommandError(completed.returncode, completed.stderr, completed.stdout) from exc
+        except (ValidationError, ValueError):
+            # Pre-apply safety refusals happen before the Go command has an
+            # ApplyResult to serialize. They are expected operational outcomes,
+            # not AgentCore crashes, so preserve them as machine-readable
+            # failures. This lets the console distinguish a stale reviewed plan
+            # from a provider failure and guide the operator to prepare a fresh
+            # plan rather than repeatedly retrying an artifact that can no
+            # longer be executed safely.
+            if completed.returncode != 0 and completed.stderr.strip():
+                message = completed.stderr.strip()
+                lowered = message.lower()
+                stale = (
+                    "workspace has changed since this plan was made" in lowered
+                    or "config files have been edited since this plan was made" in lowered
+                )
+                return ApplyResult(
+                    status="failed",
+                    created=[],
+                    updated=[],
+                    failed=[
+                        ApplyFailure(
+                            resource="",
+                            action="apply",
+                            message=message,
+                            code="stale_plan" if stale else "command_failed",
+                        )
+                    ],
+                    return_code=completed.returncode,
+                    stderr=completed.stderr,
+                )
+            raise MiseCommandError(completed.returncode, completed.stderr, completed.stdout)
 
         result = result.model_copy(update={"return_code": completed.returncode, "stderr": completed.stderr})
         if completed.returncode != 0 and result.status not in {"partial", "outcome_uncertain", "failed"}:
