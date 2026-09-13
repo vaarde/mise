@@ -58,6 +58,18 @@ export async function handler(
     }
   }
 
+  if (method === "GET" && path === "/conformance") {
+    try {
+      return json(200, await agentCore.readConformance(organizationId));
+    } catch (error) {
+      console.error("live conformance read failed", error);
+      return json(502, {
+        error: "live_conformance_unavailable",
+        message: "Mise could not compare approved desired state with Square.",
+      });
+    }
+  }
+
   if (method === "GET" && path === "/drift") {
     try {
       return json(200, await agentCore.readDrift(organizationId));
@@ -65,7 +77,7 @@ export async function handler(
       console.error("live drift read failed", error);
       return json(502, {
         error: "live_drift_unavailable",
-        message: "Mise could not complete the read-only Square drift check.",
+        message: "Mise could not complete the read-only Square drift audit.",
       });
     }
   }
