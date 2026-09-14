@@ -119,3 +119,29 @@ printf '\nConsole: %s\n' "$CONSOLE_URL"
 ```
 
 Do not perform an apply until the generated plan has been inspected and explicitly approved. The Item 9 write test is intentionally a real Square **sandbox** write followed by deterministic verification.
+
+## 8. Flagship demo preflight and reset
+
+The flagship request is:
+
+```text
+Add a 10% staff discount in Georgia, except Savannah
+```
+
+Expected interpretation: a standard Square `FIXED_PERCENTAGE` Staff Discount, scoped to `Mise Test - Atlanta` only. Savannah must be excluded by city/locality, not by exact POS location-name matching.
+
+Before a live demo, open **Differences** and click **Check again**. Start only when the console reports that every governed setting matches Square (currently `19 of 19 settings match` in the four-location sandbox estate). A textual provider-format difference such as `10%` versus `10.0%` must not appear as drift.
+
+For a real write demonstration, first create controlled sandbox drift outside Mise by changing the Atlanta Staff Discount from 10% to 9% in Square Sandbox. Then:
+
+1. In Mise, **Differences → Check again** should show approved 10% versus Square 9%.
+2. Submit the flagship request above from **Changes**.
+3. Confirm the plan targets only `Mise Test - Atlanta` and shows 9% → 10%.
+4. Approve the newly prepared plan. Do not retry an older failed or stale plan.
+5. Send the approved plan to Square.
+6. Wait for deterministic verification to report 1 of 1 locations checked and correct.
+7. Return to **Differences → Check again** and confirm the estate is fully converged again.
+
+If the flagship request produces a no-op because Square already has 10%, that is expected and should be presented as evidence that Mise does not write unnecessarily. To demonstrate the mutation path, create the controlled 9% sandbox drift first rather than changing Mise's approved desired state.
+
+Do not reseed the S3 workspace during normal demo preparation. Seeding is an infrastructure/bootstrap operation and can overwrite the current governed workspace. Use a fresh plan against the current server-side state instead.
