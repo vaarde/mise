@@ -365,6 +365,6 @@ mise/
 
 ## License
 
-Copyright © 2026 Vaarde Consulting Ltd.
+Copyright © 2026 Dan Gyinaye Poku <dan.gyinaye@gmail.com>
 
 Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for attribution information.
