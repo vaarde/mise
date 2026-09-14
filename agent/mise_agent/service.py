@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -60,6 +61,26 @@ def create_strands_agent(context: ToolContext) -> Agent:
     return Agent(**kwargs)
 
 
+def _square_percentage(value: object) -> str:
+    """Return Square's stable percentage text representation.
+
+    Square commonly reads an integral percentage back as ``10.0`` even when
+    the operator said ``10``. Persisting the same canonical representation in
+    desired state prevents a purely textual 10-vs-10.0 difference from being
+    treated as operational drift.
+    """
+    text = str(value).strip()
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return text
+
+    if number == number.to_integral_value():
+        return f"{number:.1f}"
+    normalized = format(number.normalize(), "f")
+    return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+
+
 def _normalize_square_discount_intent(analysis: IntentAnalysis) -> IntentAnalysis:
     """Make model-produced Square percentage discounts deterministic and plan-safe.
 
@@ -78,13 +99,10 @@ def _normalize_square_discount_intent(analysis: IntentAnalysis) -> IntentAnalysi
             continue
 
         props = dict(mutation.properties)
-        if "percentage" in props:
-            raw_percentage = props["percentage"]
-            if isinstance(raw_percentage, (int, float)):
-                props["percentage"] = str(raw_percentage)
-                changed = True
-            elif raw_percentage is not None and not isinstance(raw_percentage, str):
-                props["percentage"] = str(raw_percentage)
+        if "percentage" in props and props["percentage"] is not None:
+            canonical_percentage = _square_percentage(props["percentage"])
+            if props["percentage"] != canonical_percentage:
+                props["percentage"] = canonical_percentage
                 changed = True
 
             if not props.get("discount_type"):
