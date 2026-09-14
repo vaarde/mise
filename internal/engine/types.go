@@ -53,12 +53,13 @@ type Plan struct {
 // ResourceChange describes a single resource that will be created,
 // updated, or deleted, along with per-property diffs.
 type ResourceChange struct {
-	Action       Action         `json:"action"`
-	ResourceType string         `json:"resource_type"` // e.g. "square_catalog_tax"
-	ResourceName string         `json:"resource_name"` // e.g. "ga_state_sales_tax"
-	ProviderID   string         `json:"provider_id"`   // existing ID (empty for creates)
-	LocationIDs  []string       `json:"location_ids"`  // affected locations
-	Diffs        []PropertyDiff `json:"diffs"`         // property-level changes
+	Action          Action         `json:"action"`
+	ResourceType    string         `json:"resource_type"` // e.g. "square_catalog_tax"
+	ResourceName    string         `json:"resource_name"` // e.g. "ga_state_sales_tax"
+	ProviderID      string         `json:"provider_id"`   // existing ID (empty for creates)
+	ProviderVersion string         `json:"provider_version,omitempty"` // exact live version observed while planning
+	LocationIDs     []string       `json:"location_ids"`  // affected locations
+	Diffs           []PropertyDiff `json:"diffs"`         // property-level changes
 
 	// Desired is the full property set the resource should end up with,
 	// with references already resolved to provider IDs. A saved plan

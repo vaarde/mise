@@ -233,7 +233,10 @@ func comparePlan(
 	scoped []provider.Location,
 	scopeFilter []string,
 ) *PlanResult {
-	result := &PlanResult{Locations: scoped}
+	result := &PlanResult{
+		Plan:      Plan{Changes: make([]ResourceChange, 0)},
+		Locations: scoped,
+	}
 
 	for _, d := range desired {
 		change := planFor(d, live, st, scopeFilter)
@@ -299,6 +302,7 @@ func planFor(
 	}
 
 	change.ProviderID = providerID
+	change.ProviderVersion = entry.resource.Version
 
 	liveProperties := normalizeLiveProperties(entry.resource.Properties)
 	diffs := diffProperties(liveProperties, d.Properties)
@@ -336,7 +340,6 @@ func diffProperties(live, desired map[string]interface{}) []PropertyDiff {
 	var diffs []PropertyDiff
 
 	for _, key := range sortedPropertyKeys(desired) {
-		want := canonical(desired[key])
 		got, present := live[key]
 
 		if !present {
@@ -344,7 +347,7 @@ func diffProperties(live, desired map[string]interface{}) []PropertyDiff {
 			continue
 		}
 
-		if !reflect.DeepEqual(canonical(got), want) {
+		if !propertyValuesEqual(key, got, desired[key]) {
 			diffs = append(diffs, PropertyDiff{Path: key, OldValue: got, NewValue: desired[key]})
 		}
 	}

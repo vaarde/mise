@@ -35,6 +35,7 @@ class ResourceChange(StrictModel):
     resource_type: str
     resource_name: str
     provider_id: str = ""
+    provider_version: str = ""
     location_ids: list[str] = Field(default_factory=list)
     diffs: list[PropertyDiff] = Field(default_factory=list)
     desired: dict[str, Any] = Field(default_factory=dict)
@@ -66,6 +67,7 @@ class ApplyFailure(StrictModel):
     resource: str
     action: str
     message: str
+    code: str = ""
 
 
 class ApplyResult(StrictModel):

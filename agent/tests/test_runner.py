@@ -93,6 +93,30 @@ def test_runner_parses_plan_apply_drift_and_verify(tmp_path: Path) -> None:
     assert events[-1].converged == 1
 
 
+def test_runner_returns_stale_plan_as_machine_failure(tmp_path: Path) -> None:
+    script = tmp_path / "stale_mise.py"
+    script.write_text(
+        '''import sys
+print("Error: the workspace has changed since this plan was made (state was at serial 4, it is now 5).", file=sys.stderr)
+print("Something else applied in between, so the plan may be stale.", file=sys.stderr)
+raise SystemExit(1)
+''',
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "plan.json").write_text("{}", encoding="utf-8")
+    runner = fake_runner(script, workspace)
+
+    applied = runner.apply("plan.json")
+
+    assert applied.status == "failed"
+    assert applied.created == []
+    assert applied.updated == []
+    assert applied.failed[0].code == "stale_plan"
+    assert "workspace has changed" in applied.failed[0].message
+
+
 def test_runner_rejects_paths_outside_workspace(tmp_path: Path) -> None:
     script = fake_mise(tmp_path)
     workspace = tmp_path / "workspace"

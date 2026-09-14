@@ -87,8 +87,11 @@ class LocationIndex:
             matched = {
                 l.id
                 for l in self.locations
-                if l.city.casefold() in wanted
-                or any(city in l.address.casefold() for city in wanted)
+                if (
+                    l.city.casefold() in wanted
+                    if l.city.strip()
+                    else any(city in l.address.casefold() for city in wanted)
+                )
             }
             self._require_matches("city", selector.cities, matched)
             criteria.append(matched)

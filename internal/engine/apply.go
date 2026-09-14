@@ -115,7 +115,9 @@ func Apply(
 				// known, so record it rather than throwing it away.
 				accounted := recordOutcomes(result, wave, ops, outcomes, st, appliedAt)
 				st.LastApply = &appliedAt
-				saveCheckpoint(opts, st)
+				if result.Total() > 0 {
+					saveCheckpoint(opts, st)
+				}
 
 				unknown := len(ops) - accounted
 				return result, fmt.Errorf(
@@ -135,14 +137,19 @@ func Apply(
 			return result, err
 		}
 
+		beforeTotal := result.Total()
 		recordOutcomes(result, wave, ops, outcomes, st, appliedAt)
 
-		// Persist what this wave did before starting the next one, so a
-		// crash costs at most one wave rather than the whole run.
-		if err := saveCheckpointErr(opts, st); err != nil {
-			st.LastApply = &appliedAt
-			return result, fmt.Errorf("a wave was applied but state could not be saved, "+
-				"so a retry would repeat it — run 'mise drift' to see what is live: %w", err)
+		// Persist only when this wave actually changed the provider. A
+		// wave where every write was rejected must not advance state serial;
+		// otherwise the exact saved plan becomes stale even though neither
+		// Mise state nor the live POS changed.
+		if result.Total() > beforeTotal {
+			if err := saveCheckpointErr(opts, st); err != nil {
+				st.LastApply = &appliedAt
+				return result, fmt.Errorf("a wave was applied but state could not be saved, "+
+					"so a retry would repeat it — run 'mise drift' to see what is live: %w", err)
+			}
 		}
 
 		// A resource that failed is a dependency nothing later can rely
@@ -237,9 +244,14 @@ func buildOperations(wave Wave, st *state.State) ([]provider.WriteOperation, []A
 			action = provider.WriteUpdate
 		}
 
-		version := ""
-		if entry, ok := st.Resources[change.FullName()]; ok {
-			version = entry.Version
+		// Use the exact live provider version captured by the approved plan.
+		// The state fallback preserves compatibility with older plans and
+		// providers that do not expose concurrency versions.
+		version := change.ProviderVersion
+		if version == "" {
+			if entry, ok := st.Resources[change.FullName()]; ok {
+				version = entry.Version
+			}
 		}
 
 		ops = append(ops, provider.WriteOperation{
@@ -275,18 +287,6 @@ func writeBatch(
 
 // writeIndividually writes one resource per call, for adapters without
 // batch support.
-//
-// Everything in a wave is independent by construction, so the writes run
-// concurrently up to parallelism — which is what ApplyOptions.Parallelism
-// has always promised and, until now, quietly did not do.
-//
-// Cancellation stops new writes from starting and returns the context
-// error alongside the outcomes that did come back. Apply then reports
-// the rest as unknown rather than failed, because a request cut off
-// mid-flight may still have reached the POS. Returning a nil error here,
-// as an earlier version did, made Apply treat a Ctrl-C as an ordinary
-// failure and send the operator to re-create resources that may already
-// exist — the exact outcome the batch path takes care to avoid.
 func writeIndividually(
 	ctx context.Context,
 	p provider.Provider,
@@ -308,8 +308,6 @@ func writeIndividually(
 	)
 
 	for _, op := range ops {
-		// A slot has to be free before the next write starts, and a
-		// cancelled run must not sit waiting for one.
 		select {
 		case slots <- struct{}{}:
 		case <-ctx.Done():
@@ -340,11 +338,6 @@ func writeIndividually(
 }
 
 // writeOne performs a single create or update.
-//
-// The scope comes from op.Resource.LocationIDs. There is no separate
-// location argument: the interface used to pass one *and* the full set,
-// and handing an adapter the first ID of forty was not a contract
-// anything could implement correctly.
 func writeOne(ctx context.Context, p provider.Provider, op provider.WriteOperation) provider.WriteOutcome {
 	outcome := provider.WriteOutcome{Name: op.Name, ProviderID: op.Resource.ProviderID}
 
@@ -364,12 +357,6 @@ func writeOne(ctx context.Context, p provider.Provider, op provider.WriteOperati
 
 // recordOutcomes folds a wave's results into the apply result and state,
 // and reports how many operations the outcomes accounted for.
-//
-// Outcomes are matched to operations by name rather than by position. A
-// batch adapter returns them in order, but the individual path completes
-// concurrently and returns fewer than it was given when a run is
-// cancelled — position would then attribute one resource's result to
-// another.
 func recordOutcomes(
 	result *ApplyResult,
 	wave Wave,
@@ -392,8 +379,6 @@ func recordOutcomes(
 	for _, outcome := range outcomes {
 		op, ok := opsByName[outcome.Name]
 		if !ok {
-			// A provider naming an outcome Mise never asked for is
-			// misbehaving; there is nothing sound to record for it.
 			continue
 		}
 		change := changesByName[op.Name]
@@ -414,8 +399,6 @@ func recordOutcomes(
 			providerID = op.Resource.ProviderID
 		}
 
-		// State records what is now live, so the next plan compares
-		// against reality rather than re-proposing the same change.
 		st.Resources[op.Name] = &state.ResourceState{
 			ProviderID: providerID,
 			Type:       change.ResourceType,

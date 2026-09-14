@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import yaml
 
 from mise_agent.models import ChangeIntent, IntentAnalysis, LocationSelector, ResourceMutation
-from mise_agent.service import MiseOperationsAgent
+from mise_agent.service import MiseOperationsAgent, SYSTEM_PROMPT
 from mise_cli.contracts import PlanDocument, PlanSummary
 
 
@@ -52,6 +52,14 @@ def workspace(tmp_path: Path) -> Path:
     return root
 
 
+def test_system_prompt_defines_plain_percentage_discount_default() -> None:
+    assert "resource_type=square_catalog_discount" in SYSTEM_PROMPT
+    assert "discount_type=FIXED_PERCENTAGE" in SYSTEM_PROMPT
+    assert "manually apply at POS" in SYSTEM_PROMPT
+    assert "Do not reinterpret it as a pricing rule" in SYSTEM_PROMPT
+    assert "Do not ask which items/categories" in SYSTEM_PROMPT
+
+
 def test_ambiguous_request_stops_before_render_or_plan(tmp_path: Path) -> None:
     root = workspace(tmp_path)
     runner = FakeRunner(root)
@@ -94,3 +102,35 @@ def test_clear_request_renders_then_generates_governed_plan(tmp_path: Path) -> N
     assert ".mise/governance/plans/" in portable_plan_path
     rendered = yaml.safe_load((root / "taxes.yaml").read_text(encoding="utf-8"))
     assert rendered["resources"][0]["properties"]["percentage"] == "6.5"
+
+
+def test_percentage_discount_is_normalized_before_render(tmp_path: Path) -> None:
+    root = workspace(tmp_path)
+    runner = FakeRunner(root)
+    intent = ChangeIntent(
+        title="Staff discount",
+        interpretation="Add a 10% staff discount.",
+        selector=LocationSelector(states=["IA"]),
+        changes=[
+            ResourceMutation(
+                resource_type="square_catalog_discount",
+                resource_name="staff_discount",
+                properties={"percentage": 10},
+            )
+        ],
+    )
+    analysis = IntentAnalysis(
+        needs_clarification=False,
+        interpretation=intent.interpretation,
+        intent=intent,
+    )
+    service = MiseOperationsAgent(root, runner, FakeAgent(analysis))
+
+    result = service.prepare_plan("Add a 10% staff discount")
+
+    assert result.status == "planned"
+    rendered = yaml.safe_load((root / "discounts.yaml").read_text(encoding="utf-8"))
+    resource = rendered["resources"][0]
+    assert resource["properties"]["name"] == "Staff Discount"
+    assert resource["properties"]["discount_type"] == "FIXED_PERCENTAGE"
+    assert resource["properties"]["percentage"] == "10"

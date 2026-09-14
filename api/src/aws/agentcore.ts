@@ -36,6 +36,32 @@ export class AwsAgentCoreInvoker implements AgentInvoker {
       },
     );
   }
+
+  async readDrift(organizationId: string): Promise<unknown> {
+    return invokeJson(
+      this.client,
+      this.runtimeArn,
+      agentCoreSessionId("read", `drift:${organizationId}:${randomUUID()}`),
+      this.qualifier,
+      {
+        mode: "drift",
+        organization_id: organizationId,
+      },
+    );
+  }
+
+  async readConformance(organizationId: string): Promise<unknown> {
+    return invokeJson(
+      this.client,
+      this.runtimeArn,
+      agentCoreSessionId("read", `conformance:${organizationId}:${randomUUID()}`),
+      this.qualifier,
+      {
+        mode: "conformance",
+        organization_id: organizationId,
+      },
+    );
+  }
 }
 
 export class AwsAgentCoreApplyRuntime implements ApplyRuntime {
@@ -94,11 +120,11 @@ export class AwsLambdaApplyDispatcher implements ApplyDispatcher {
 
 /**
  * AgentCore runtime session IDs must be at least 33 characters. External
- * conversation and rollout IDs are deliberately kept separate from that
- * platform constraint. Hashing gives us a valid, stable ID so clarification
- * turns stay in one session and Lambda retries reuse the same apply session.
+ * conversation, read, and rollout IDs are deliberately kept separate from
+ * that platform constraint. Hashing gives us valid stable IDs without
+ * exposing browser identifiers directly to the runtime platform.
  */
-export function agentCoreSessionId(scope: "chat" | "apply", externalId: string): string {
+export function agentCoreSessionId(scope: "chat" | "read" | "apply", externalId: string): string {
   const digest = createHash("sha256").update(`${scope}:${externalId}`).digest("hex");
   return `mise-${scope}-${digest.slice(0, 48)}`;
 }

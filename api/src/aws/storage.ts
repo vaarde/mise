@@ -32,6 +32,7 @@ function prefix(entityType: string): string {
     override: "OVERRIDE",
     snapshot: "SNAPSHOT",
     revision: "REVISION",
+    agent_request: "AGENT_REQUEST",
   };
   const found = value[entityType];
   if (!found) throw new Error(`unknown entity type: ${entityType}`);
@@ -222,7 +223,7 @@ export class AwsS3ArtifactStore implements ArtifactStore {
         );
         copied.push(destinationKey);
       }
-      continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+      continuationToken = page.NextContinuationToken;
     } while (continuationToken);
     return copied;
   }
@@ -232,30 +233,30 @@ export class AwsMutationLock implements MutationLock {
   constructor(
     private readonly tableName: string,
     private readonly client = DynamoDBDocumentClient.from(new DynamoDBClient({})),
-    private readonly nowSeconds: () => number = () => Math.floor(Date.now() / 1000),
   ) {}
 
   async acquire(organizationId: string, holderId: string, leaseSeconds = 600): Promise<void> {
-    const now = this.nowSeconds();
+    const now = Math.floor(Date.now() / 1000);
+    const expiresAt = now + leaseSeconds;
     try {
       await this.client.send(
-        new UpdateCommand({
+        new PutCommand({
           TableName: this.tableName,
-          Key: { PK: orgKey(organizationId), SK: "LOCK#MUTATION" },
-          UpdateExpression:
-            "SET holder_id = :holder, acquired_at = :now, expires_at = :expires, entity_type = :type",
-          ConditionExpression:
-            "attribute_not_exists(holder_id) OR expires_at < :now OR holder_id = :holder",
-          ExpressionAttributeValues: {
-            ":holder": holderId,
-            ":now": now,
-            ":expires": now + leaseSeconds,
-            ":type": "mutation_lock",
+          Item: {
+            PK: orgKey(organizationId),
+            SK: "LOCK#MUTATION",
+            entity_type: "mutation_lock",
+            holder_id: holderId,
+            expires_at: expiresAt,
           },
+          ConditionExpression: "attribute_not_exists(PK) OR expires_at < :now",
+          ExpressionAttributeValues: { ":now": now },
         }),
       );
     } catch (error) {
-      if (isConditionalFailure(error)) throw new Error("MUTATION_LOCK_BUSY");
+      if (isConditionalCheckFailure(error)) {
+        throw new Error("another rollout is already mutating this organization");
+      }
       throw error;
     }
   }
@@ -271,24 +272,18 @@ export class AwsMutationLock implements MutationLock {
         }),
       );
     } catch (error) {
-      if (!isConditionalFailure(error)) throw error;
+      if (!isConditionalCheckFailure(error)) throw error;
     }
   }
 }
 
 function safeSegment(value: string): string {
-  const clean = value.trim();
-  if (!clean || clean.includes("#") || clean.includes("/") || clean.includes("\\")) {
-    throw new Error(`invalid key segment: ${value}`);
+  if (!value || value.includes("#") || value.includes("/") || value.includes("..")) {
+    throw new Error(`unsafe metadata key segment: ${value}`);
   }
-  return clean;
+  return value;
 }
 
-function isConditionalFailure(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    (error as { name: string }).name === "ConditionalCheckFailedException"
-  );
+function isConditionalCheckFailure(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as { name?: string }).name === "ConditionalCheckFailedException");
 }

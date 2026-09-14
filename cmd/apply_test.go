@@ -249,6 +249,10 @@ func TestApplyRecordsPartialSuccessAndKeepsState(t *testing.T) {
 	fetchedWorkspace(t, dir)
 	editTaxRate(t, dir, "4.5", "5.0")
 
+	before, err := state.Load(dir)
+	require.NoError(t, err)
+	beforeSerial := before.Serial
+
 	fakeState.writeErr = errWriteRejected
 
 	out, err := runApplyInWorkspace(t, dir, true, "", "")
@@ -256,11 +260,15 @@ func TestApplyRecordsPartialSuccessAndKeepsState(t *testing.T) {
 	assert.Contains(t, out, "Apply incomplete.")
 	assert.Contains(t, out, "rejected by the POS")
 
-	// Nothing landed, so state must not claim the new rate is live.
+	// Nothing landed, so state must not claim the new rate is live or
+	// move the serial. Advancing the serial here would make the exact
+	// saved plan look stale even though the provider rejected every write.
 	st, err2 := state.Load(dir)
 	require.NoError(t, err2)
 	assert.Equal(t, "4.5", st.Resources["fakepos_tax.state_tax"].Properties["percentage"],
 		"a failed write must not be recorded as applied")
+	assert.Equal(t, beforeSerial, st.Serial,
+		"a zero-write failure must remain retryable from the same saved plan")
 }
 
 var errWriteRejected = errors.New("rejected by the POS")

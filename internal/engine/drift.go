@@ -114,7 +114,10 @@ func Drift(
 		return nil, err
 	}
 
-	result := &DriftResult{Locations: scoped}
+	// Keep the machine contract stable: a clean drift report serializes
+	// `drifted` as [] rather than null. Downstream typed clients should not
+	// need a special case for the absence of discrepancies.
+	result := &DriftResult{Locations: scoped, Drifted: []ResourceDrift{}}
 	if st.LastFetch != nil {
 		result.LastFetch = st.LastFetch.Format("2006-01-02 15:04:05 MST")
 	}
@@ -281,14 +284,13 @@ func driftDiffs(expected, observed interface{}) []PropertyDiff {
 
 	var diffs []PropertyDiff
 	for _, key := range sortedPropertyKeys(expectedMap) {
-		want := canonical(expectedMap[key])
 		got, present := observedMap[key]
 
 		if !present {
 			diffs = append(diffs, PropertyDiff{Path: key, OldValue: expectedMap[key]})
 			continue
 		}
-		if !reflect.DeepEqual(canonical(got), want) {
+		if !propertyValuesEqual(key, got, expectedMap[key]) {
 			diffs = append(diffs, PropertyDiff{Path: key, OldValue: expectedMap[key], NewValue: got})
 		}
 	}

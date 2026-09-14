@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .live_reads import read_conformance, read_drift
 from .runtime import (
     AgentCoreRuntime,
     RuntimeConfigurationError,
@@ -51,7 +52,13 @@ async def invocations(request: Request) -> JSONResponse:
     with _busy_lock:
         _busy += 1
     try:
-        result = runtime().invoke(payload)
+        mode = payload.get("mode")
+        if mode == "drift":
+            result = read_drift(runtime(), payload)
+        elif mode == "conformance":
+            result = read_conformance(runtime(), payload)
+        else:
+            result = runtime().invoke(payload)
         return JSONResponse(result)
     except (RuntimeConfigurationError, RuntimeProtocolError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

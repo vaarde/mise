@@ -392,3 +392,40 @@ function event(
     ...(body ? { body: JSON.stringify(body) } : {}),
   };
 }
+
+test("plan detail exposes reviewable changes only from hash-verified artifacts", async () => {
+  const fx = fixture();
+  const plan = await seedPlan(fx);
+  const bytes = Buffer.from(JSON.stringify({
+    format_version: 2,
+    plan: {
+      changes: [
+        { action: 0, resource_type: "square_catalog_tax", resource_name: "noop", provider_id: "T0", location_ids: ["L9"], diffs: [] },
+        {
+          action: 2,
+          resource_type: "square_catalog_tax",
+          resource_name: "nashville_city_tax",
+          provider_id: "TAX_1",
+          location_ids: ["L2", "L1"],
+          diffs: [{ path: "percentage", old_value: "3.25", new_value: "2.75" }],
+        },
+      ],
+    },
+  }));
+  fx.artifacts.objects.set(plan.artifact_s3_key, bytes);
+  await fx.metadata.update("demo-franchise", "plan", plan.plan_id, {
+    plan_hash: createHash("sha256").update(bytes).digest("hex"),
+  });
+
+  const detail = await fx.service.planDetail(plan.plan_id);
+  assert.equal(detail.artifact_verified, true);
+  assert.equal(detail.changes.length, 1);
+  assert.equal(detail.changes[0]!.action, "update");
+  assert.deepEqual(detail.changes[0]!.diffs, [{ path: "percentage", old_value: "3.25", new_value: "2.75" }]);
+  assert.deepEqual(detail.target_location_ids, ["L1", "L2"]);
+
+  fx.artifacts.objects.set(plan.artifact_s3_key, Buffer.from("tampered"));
+  const tampered = await fx.service.planDetail(plan.plan_id);
+  assert.equal(tampered.artifact_verified, false);
+  assert.deepEqual(tampered.changes, []);
+});

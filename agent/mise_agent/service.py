@@ -20,9 +20,23 @@ between probabilistic reasoning and deterministic POS execution.
 
 Rules:
 - Use read-only tools to inspect the estate before resolving named groups or resources.
+- Treat geographic language as geography, not as an exact POS location name. For example,
+  in 'Georgia except Savannah', resolve Georgia as a state and Savannah as a city/locality.
+  Use exact location-name matching only when the operator refers to the POS location name itself.
+- For a plain named percentage discount request, such as 'add a 10% staff discount', use the
+  standard Square catalog discount semantics unless the operator explicitly asks for something
+  narrower or automatic: resource_type=square_catalog_discount, discount_type=FIXED_PERCENTAGE,
+  percentage equal to the stated rate, and the stated human-facing discount name. Treat it as a
+  normal discount that staff can manually apply at POS. Do not reinterpret it as a pricing rule.
+  Do not ask which items/categories it applies to when the operator did not request item/category
+  restrictions; a standard catalog discount may be created without inventing such restrictions.
+  Ask a clarification only if the operator explicitly requests automatic eligibility/conditions,
+  item/category restrictions, a fixed amount, a variable rate, or another materially distinct
+  discount behavior without enough detail to encode it safely.
 - Never invent a tax rate, price, resource, location, exception, or effective time.
-- If any financially, regulatorily, or operationally material detail is ambiguous,
-  set needs_clarification=true and ask one focused question. Do not output an intent yet.
+- If any financially, regulatorily, or operationally material detail is ambiguous after applying
+  the explicit domain defaults above, set needs_clarification=true and ask one focused question.
+  Do not output an intent yet.
 - When the request is clear, describe exactly which locations/resources are intended,
   including exclusions, and return a typed ChangeIntent.
 - You do not approve or apply POS writes. A separate deterministic workflow generates
@@ -46,6 +60,51 @@ def create_strands_agent(context: ToolContext) -> Agent:
     return Agent(**kwargs)
 
 
+def _normalize_square_discount_intent(analysis: IntentAnalysis) -> IntentAnalysis:
+    """Make model-produced Square percentage discounts deterministic and plan-safe.
+
+    The reasoning model decides *what* the operator wants. This boundary normalizes the
+    small amount of provider syntax that should never depend on model formatting: Square
+    expects percentage values as strings, FIXED_PERCENTAGE for a fixed percentage discount,
+    and a display name. It does not change location scope or invent a missing rate.
+    """
+    if analysis.needs_clarification or analysis.intent is None:
+        return analysis
+
+    changed = False
+    intent = analysis.intent.model_copy(deep=True)
+    for mutation in intent.changes:
+        if mutation.resource_type != "square_catalog_discount":
+            continue
+
+        props = dict(mutation.properties)
+        if "percentage" in props:
+            raw_percentage = props["percentage"]
+            if isinstance(raw_percentage, (int, float)):
+                props["percentage"] = str(raw_percentage)
+                changed = True
+            elif raw_percentage is not None and not isinstance(raw_percentage, str):
+                props["percentage"] = str(raw_percentage)
+                changed = True
+
+            if not props.get("discount_type"):
+                props["discount_type"] = "FIXED_PERCENTAGE"
+                changed = True
+
+        if not props.get("name"):
+            fallback_name = mutation.resource_name.replace("_", " ").replace("-", " ").strip()
+            if fallback_name:
+                props["name"] = " ".join(word.capitalize() for word in fallback_name.split())
+                changed = True
+
+        if props != mutation.properties:
+            mutation.properties = props
+
+    if not changed:
+        return analysis
+    return analysis.model_copy(update={"intent": intent})
+
+
 class MiseOperationsAgent:
     def __init__(
         self,
@@ -65,7 +124,7 @@ class MiseOperationsAgent:
         analysis = result.structured_output
         if not isinstance(analysis, IntentAnalysis):
             analysis = IntentAnalysis.model_validate(analysis)
-        return analysis
+        return _normalize_square_discount_intent(analysis)
 
     def prepare_plan(
         self,

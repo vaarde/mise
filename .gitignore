@@ -1,11 +1,15 @@
 # Build artifacts
 bin/
 mise
+api/dist/
+console/dist/
+deploy/public/mise-api.zip
 
 # Mise state and credentials (never commit these)
 .mise/state.json
 .mise/credentials
 .mise/lock
+.mise/operator-code
 
 # Go
 *.exe
@@ -37,3 +41,4 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+console/.env.local

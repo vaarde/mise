@@ -57,6 +57,36 @@ export class MiseApiService {
     return plan;
   }
 
+  /**
+   * Plan metadata plus the reviewable change list parsed from the hashed
+   * artifact. Metadata alone carries only counts, so without this a reloaded
+   * console cannot show what a plan changes. Changes are returned only when the
+   * artifact still matches the approved-against hash; a mismatch reports
+   * artifact_verified=false and no changes rather than untrusted content.
+   */
+  async planDetail(planId: string): Promise<PlanDetail> {
+    const plan = await this.plan(planId);
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.deps.artifacts.getBytes(plan.artifact_s3_key);
+    } catch {
+      return { ...plan, artifact_verified: false, changes: [], target_location_ids: [] };
+    }
+    const actual = createHash("sha256").update(bytes).digest("hex");
+    if (actual !== plan.plan_hash) {
+      return { ...plan, artifact_verified: false, changes: [], target_location_ids: [] };
+    }
+    const changes = planChangesFromArtifact(bytes);
+    const targets = new Set<string>();
+    for (const change of changes) for (const id of change.location_ids) targets.add(id);
+    return {
+      ...plan,
+      artifact_verified: true,
+      changes,
+      target_location_ids: [...targets].sort(),
+    };
+  }
+
   async rollout(rolloutId: string): Promise<RolloutRecord> {
     const rollout = await this.deps.metadata.get<RolloutRecord>(
       this.organizationId,
@@ -347,4 +377,59 @@ function latestBy<T, K extends keyof T>(items: T[], key: K): T | null {
 function latestRevision<T extends { revision_number: number }>(items: T[]): T | null {
   if (!items.length) return null;
   return [...items].sort((a, b) => b.revision_number - a.revision_number)[0] ?? null;
+}
+
+export interface PlanChangeDetail {
+  action: "create" | "update" | "delete";
+  resource_type: string;
+  resource_name: string;
+  provider_id: string;
+  location_ids: string[];
+  diffs: Array<{ path: string; old_value: unknown; new_value: unknown }>;
+}
+
+export interface PlanDetail extends PlanRecord {
+  artifact_verified: boolean;
+  changes: PlanChangeDetail[];
+  target_location_ids: string[];
+}
+
+const ACTION_NAMES: Record<number, PlanChangeDetail["action"] | undefined> = {
+  1: "create",
+  2: "update",
+  3: "delete",
+};
+
+function planChangesFromArtifact(bytes: Uint8Array): PlanChangeDetail[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return [];
+  }
+  const root = asObject(parsed);
+  const plan = root.plan && typeof root.plan === "object" ? asObject(root.plan) : root;
+  const rawChanges = Array.isArray(plan.changes) ? plan.changes : [];
+  const changes: PlanChangeDetail[] = [];
+  for (const raw of rawChanges) {
+    const change = asObject(raw);
+    const action = typeof change.action === "number" ? ACTION_NAMES[change.action] : undefined;
+    if (!action) continue; // no-op entries are not reviewable changes
+    changes.push({
+      action,
+      resource_type: String(change.resource_type ?? ""),
+      resource_name: String(change.resource_name ?? ""),
+      provider_id: String(change.provider_id ?? ""),
+      location_ids: Array.isArray(change.location_ids) ? change.location_ids.map(String) : [],
+      diffs: (Array.isArray(change.diffs) ? change.diffs : []).map((value) => {
+        const diff = asObject(value);
+        return { path: String(diff.path ?? ""), old_value: diff.old_value ?? null, new_value: diff.new_value ?? null };
+      }),
+    });
+  }
+  return changes;
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
