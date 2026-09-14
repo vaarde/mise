@@ -353,7 +353,7 @@ mise/
 │   ├── state/                    # State file management
 │   ├── engine/                   # Plan/apply/drift logic
 │   ├── provider/                 # Provider interface + registry
-│   ├── credentials/               # .mise/credentials store
+│   ├── credentials/              # .mise/credentials store
 │   └── providers/
 │       └── square/               # Square POS adapter (client, OAuth2, locations)
 ├── pkg/
@@ -365,4 +365,6 @@ mise/
 
 ## License
 
-TBD
+Copyright © 2026 Vaarde Consulting Ltd.
+
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for attribution information.
