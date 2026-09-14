@@ -340,7 +340,6 @@ func diffProperties(live, desired map[string]interface{}) []PropertyDiff {
 	var diffs []PropertyDiff
 
 	for _, key := range sortedPropertyKeys(desired) {
-		want := canonical(desired[key])
 		got, present := live[key]
 
 		if !present {
@@ -348,7 +347,7 @@ func diffProperties(live, desired map[string]interface{}) []PropertyDiff {
 			continue
 		}
 
-		if !reflect.DeepEqual(canonical(got), want) {
+		if !propertyValuesEqual(key, got, desired[key]) {
 			diffs = append(diffs, PropertyDiff{Path: key, OldValue: got, NewValue: desired[key]})
 		}
 	}

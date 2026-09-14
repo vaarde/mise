@@ -284,14 +284,13 @@ func driftDiffs(expected, observed interface{}) []PropertyDiff {
 
 	var diffs []PropertyDiff
 	for _, key := range sortedPropertyKeys(expectedMap) {
-		want := canonical(expectedMap[key])
 		got, present := observedMap[key]
 
 		if !present {
 			diffs = append(diffs, PropertyDiff{Path: key, OldValue: expectedMap[key]})
 			continue
 		}
-		if !reflect.DeepEqual(canonical(got), want) {
+		if !propertyValuesEqual(key, got, expectedMap[key]) {
 			diffs = append(diffs, PropertyDiff{Path: key, OldValue: expectedMap[key], NewValue: got})
 		}
 	}
